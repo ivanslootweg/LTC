@@ -89,9 +89,10 @@ class TrafficData:
         self.train_x = self.train_x[:,permutation[valid_size + test_size :]]
         self.train_y = self.train_y[:,permutation[valid_size + test_size :]]
 
+        self.feature_labels = ['Holiday','Temperature','Rain','Snow','Clouds','Weekday','Noon']
+
 
 class OccupancyData:
-
     def __init__(self,seq_len=32,future=1,batch_size=16):
 
         self.seq_len = seq_len
@@ -135,6 +136,7 @@ class OccupancyData:
 
         self.test_x = np.concatenate([test0_x,test1_x],axis=1)
         self.test_y = np.concatenate([test0_y,test1_y],axis=1)
+        self.feature_labels = ['Temperature', 'Humidity','Light','CO2','HumidityRatio']
 
 
     def read_file(self,filename):
@@ -168,6 +170,8 @@ class CheetahData:
         self.train_x, self.train_y = self._load_files(train_files)
         self.test_x, self.test_y = self._load_files(test_files)
         self.valid_x, self.valid_y = self._load_files(valid_files)
+        self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
+
 
     def _load_files(self,files):
         all_x = []
@@ -222,8 +226,11 @@ class ForecastModel:
 
     def fit(self,trial=None,_data=None,epochs=100,learning_rate=1e-2,cosine_lr=False,in_features=None,out_features=None,model_size=None,optimise=False,gpus=None):
             loss = torch.nn.MSELoss()
+            self.n_epochs = epochs
 
             self.future = _data.future
+            self.feature_labels = _data.feature_labels
+            self.in_features = in_features
             if not optimise:
                 self.model_size = model_size
                 if(self.model_type.startswith("ltc")):
@@ -289,8 +296,10 @@ class ForecastModel:
 
     def test(self):
         self.trainer.test(self.learn)
-
-        self.plot_test(version="after")
+        if self.n_epochs > 10: 
+            self.plot_test(version="after")
+        else:
+            self.plot_test(version="before")
 
     def plot_test(self,version="before"):
         y_list = []
@@ -303,19 +312,22 @@ class ForecastModel:
             y_hat = y_hat.view_as(y)
             y_list.append(y[:,-1,:])
             y_hat_list.append(y_hat[:,-1,:])
-        # y =(series) * (16,FEATURES)
         y = torch.cat(y_list,dim=0).detach().numpy()
         y_hat = torch.cat(y_hat_list,dim=0).detach().numpy()
 
-        plt.figure(figsize=(30, 4))
-        plt.plot(y[:,0], label="Target output",linewidth=1)
-        plt.plot(y_hat[:,0], label="NCP output",linewidth=1)
-        # plt.ylim((-1, 1))
-        plt.title(f"{version} training")
-        plt.legend(loc="upper right")
+        fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features))
+        axes = axes.ravel()
+        for (feat_nr,ax) in zip(range(self.in_features),axes):
+            ax.plot(y[:,feat_nr],label="Target output",linewidth=1)
+            ax.plot(y_hat[:,feat_nr], label="NCP output",linewidth=1)
+            ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
+            ax.legend(loc='upper right')
+
+        plt.suptitle(f"{version} training")
         plt.tight_layout()
         plt.savefig(f"predictions_{self.task}_{version}.png")
         plt.close()
+
 
 
 
