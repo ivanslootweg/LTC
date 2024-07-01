@@ -38,7 +38,7 @@ def load_trace():
     df = pd.read_csv("data/traffic/Metro_Interstate_Traffic_Volume.csv")
     holiday = (df["holiday"].values == None).astype(np.float32)
     temp = df["temp"].values.astype(np.float32)
-    temp -= np.mean(temp)  # normalize temp by annual mean
+    # temp -= np.mean(temp)  # normalize temp by annual mean
     rain = df["rain_1h"].values.astype(np.float32)
     snow = df["snow_1h"].values.astype(np.float32)
     clouds = df["clouds_all"].values.astype(np.float32)
@@ -52,8 +52,8 @@ def load_trace():
     features = np.stack([holiday, temp, rain, snow, clouds, weekday, noon], axis=-1)
 
     traffic_volume = df["traffic_volume"].values.astype(np.float32)
-    traffic_volume -= np.mean(traffic_volume)  # normalize
-    traffic_volume /= np.std(traffic_volume)  # normalize
+    # traffic_volume -= np.mean(traffic_volume)  # normalize
+    # traffic_volume /= np.std(traffic_volume)  # normalize
 
     return features, traffic_volume
 
@@ -203,7 +203,7 @@ def get_database_class(data_base):
 
             print("train_x.shape:",str(self.train_x.shape),self.train_x.mean())
             print("train_y.shape:",str(self.train_y.shape),self.train_y.mean())
-            print("valid_x.shape:",str(self.valid_x.shape),self.valid_x,mean())
+            print("valid_x.shape:",str(self.valid_x.shape),self.valid_x.mean())
             print("valid_y.shape:",str(self.valid_y.shape),self.valid_y.mean())
             print("test_x.shape:",str(self.test_x.shape),self.test_x.mean())
             print("test_y.shape:",str(self.test_y.shape),self.test_y.mean())
@@ -223,8 +223,12 @@ def get_database_class(data_base):
             self.valid_y = self.normalize(self.valid_y,"y")
             self.test_x = self.normalize(self.test_x,"x")
             self.test_y = self.normalize(self.test_y,"y")
-
-
+            print("train_x.shape:",str(self.train_x.shape),self.train_x.mean())
+            print("train_y.shape:",str(self.train_y.shape),self.train_y.mean())
+            print("valid_x.shape:",str(self.valid_x.shape),self.valid_x.mean())
+            print("valid_y.shape:",str(self.valid_y.shape),self.valid_y.mean())
+            print("test_x.shape:",str(self.test_x.shape),self.test_x.mean())
+            print("test_y.shape:",str(self.test_y.shape),self.test_y.mean())
 
         def get_dataloader(self,subset="train"):
             # dataloader input of shapes [BATCH,series_length,features]
@@ -247,8 +251,13 @@ def get_database_class(data_base):
             if not hasattr(self,"std") or not hasattr(self,"mean"):
                 self.mean = {}
                 self.std = {}
-            self.mean[values] = torch.mean(tensor, dim=(0, 1), keepdim=True)
-            self.std[values] = torch.std(tensor, dim=(0, 1), keepdim=True)
+            if not values in self.mean or not values in self.std:
+                self.mean[values] = torch.mean(tensor, dim=(0, 1), keepdim=True)
+                self.std[values] = torch.std(tensor, dim=(0, 1), keepdim=True)
+                res = self.std[values].clone()
+                res[self.std[values]==0] = torch.tensor(1)
+                self.std[values] = res
+                del res
             return (tensor - self.mean[values]) / self.std[values]
         
         def denormalize(self,tensor,values="x"):

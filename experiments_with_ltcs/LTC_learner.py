@@ -13,6 +13,7 @@ class SequenceLearner(pl.LightningModule):
         self._loaderfunc = _loaderfunc
         self.n_iterations = n_iterations
         self.cosine_lr = cosine_lr
+        self.save_hyperparameters(ignore="_loaderfunc")
     
     def train_dataloader(self):
         # return self.train_dataloader
