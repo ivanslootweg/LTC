@@ -10,11 +10,14 @@ import pytorch_lightning as pl
 from ncps.wirings import AutoNCP, FullyConnected
 
 import torch
+import torch.nn as nn
 import torch.utils.data as data
 from LTC_learner import SequenceLearner
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint
+
 
 import optuna
 from optuna.integration import PyTorchLightningPruningCallback
@@ -22,6 +25,15 @@ from optuna.integration import PyTorchLightningPruningCallback
 import matplotlib.pyplot as plt
 
 
+class NMSELoss(nn.Module):
+    def __init__(self):
+        super(NMSELoss, self).__init__()
+
+    def forward(self, inputs, targets):
+        # normalzed mean squared error
+        loss = torch.mean(((targets-inputs)**2))/ torch.mean(targets)
+        return loss
+    
 def load_trace():
     df = pd.read_csv("data/traffic/Metro_Interstate_Traffic_Volume.csv")
     holiday = (df["holiday"].values == None).astype(np.float32)
@@ -91,7 +103,6 @@ class TrafficData:
 
         self.feature_labels = ['Holiday','Temperature','Rain','Snow','Clouds','Weekday','Noon']
 
-
 class OccupancyData:
     def __init__(self,seq_len=32,future=1,batch_size=16):
 
@@ -152,8 +163,6 @@ class OccupancyData:
         data_y = df['Occupancy'].values.astype(np.int32)
         return data_x,data_y
             
-
-
 class CheetahData:
     def __init__(self,seq_len=32,future=1,batch_size=16):
         all_files = sorted([os.path.join("data/cheetah",d) for d in os.listdir("data/cheetah") if d.endswith(".npy")])
@@ -192,15 +201,30 @@ def get_database_class(data_base):
         def __init__(self,**kwargs):
             super().__init__(**kwargs)
 
-            print("train_x.shape:",str(self.train_x.shape))
-            print("train_y.shape:",str(self.train_y.shape))
-            print("valid_x.shape:",str(self.valid_x.shape))
-            print("valid_y.shape:",str(self.valid_y.shape))
-            print("test_x.shape:",str(self.test_x.shape))
-            print("test_y.shape:",str(self.test_y.shape))
+            print("train_x.shape:",str(self.train_x.shape),self.train_x.mean())
+            print("train_y.shape:",str(self.train_y.shape),self.train_y.mean())
+            print("valid_x.shape:",str(self.valid_x.shape),self.valid_x,mean())
+            print("valid_y.shape:",str(self.valid_y.shape),self.valid_y.mean())
+            print("test_x.shape:",str(self.test_x.shape),self.test_x.mean())
+            print("test_y.shape:",str(self.test_y.shape),self.test_y.mean())
 
             self.in_features = self.train_x.shape[2]
             self.out_features = self.train_y.shape[2]
+
+            # self.train_x = self.train_x / self.train_x_norm
+            # self.train_y = self.train_y / self.train_y_norm
+            # self.valid_x = self.valid_x / self.valid_x_norm
+            # self.valid_y = self.valid_y / self.valid_y_norm
+            # self.test_x = self.test_x / self.test_x_norm
+            # self.test_y = self.test_y / self.test_y_norm
+            self.train_x = self.normalize(self.train_x,"x")
+            self.train_y = self.normalize(self.train_y,"y")
+            self.valid_x = self.normalize(self.valid_x,"x")
+            self.valid_y = self.normalize(self.valid_y,"y")
+            self.test_x = self.normalize(self.test_x,"x")
+            self.test_y = self.normalize(self.test_y,"y")
+
+
 
         def get_dataloader(self,subset="train"):
             # dataloader input of shapes [BATCH,series_length,features]
@@ -217,20 +241,39 @@ def get_database_class(data_base):
                 shuffle=True if subset == "train" else False,
                 num_workers = 4 if subset != "test" else 1,
             )
+
+        def normalize(self, tensor,values="x"):
+            tensor = torch.tensor(tensor)
+            if not hasattr(self,"std") or not hasattr(self,"mean"):
+                self.mean = {}
+                self.std = {}
+            self.mean[values] = torch.mean(tensor, dim=(0, 1), keepdim=True)
+            self.std[values] = torch.std(tensor, dim=(0, 1), keepdim=True)
+            return (tensor - self.mean[values]) / self.std[values]
+        
+        def denormalize(self,tensor,values="x"):
+            return tensor * self.std[values] + self.mean[values]
+        
     return DataBaseClass
 
+
 class ForecastModel:
-    def __init__(self,task,model_type="ltc"):
+    def __init__(self,task,model_id,model_type="ltc"):
         self.model_type = model_type
         self.task = task
+        self.model_id = model_id
 
     def fit(self,trial=None,_data=None,epochs=100,learning_rate=1e-2,cosine_lr=False,in_features=None,out_features=None,model_size=None,optimise=False,gpus=None):
             loss = torch.nn.MSELoss()
+            # loss = NMSELoss()
             self.n_epochs = epochs
-
             self.future = _data.future
             self.feature_labels = _data.feature_labels
             self.in_features = in_features
+            self.mean = _data.mean
+            self.std = _data.std
+            self.experiment_name = f"{self.task}_{self.model_id}"
+
             if not optimise:
                 self.model_size = model_size
                 if(self.model_type.startswith("ltc")):
@@ -242,6 +285,7 @@ class ForecastModel:
                 lr_logger = LearningRateMonitor(logging_interval='step')
                             
                 tensorboard_logger = TensorBoardLogger(save_dir="log",
+                        version = f"{self.model_id}",
                         name=f"{self.task}_{self.model_type}")
                 
                 tensorboard_logger.log_hyperparams({
@@ -258,15 +302,20 @@ class ForecastModel:
                     gradient_clip_val=1,
                     accelerator= 'cpu' if gpus is None else 'gpu',
                     devices=gpus,
-                    callbacks=[lr_logger]
+                    callbacks=[lr_logger],
                 )
 
             else:
-                # suggestions for trial
                 learning_rate = trial.suggest_float("learning_rate",1e-4,1e-2)
                 cosine_lr = trial.suggest_int("cosine_lr",0,1)
                 model_size = trial.suggest_int("model_size",int((out_features+3)/2)*2,48,4)
-                               
+                checkpoint_callback = ModelCheckpoint(
+                    save_top_k=1,
+                    monitor="val_loss",
+                    mode="min",
+                    dirpath=f"./checkpoints/{self.task}_{self.model_id}",
+                    filename="{epoch:02d}-{val_loss:.2f}",
+                )
 
                 self.model_size = model_size
                 if(self.model_type.startswith("ltc")):
@@ -281,22 +330,26 @@ class ForecastModel:
                     gradient_clip_val=1,
                     accelerator= 'cpu' if gpus is None else 'gpu',
                     devices=gpus,
-                    callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss")]
+                    callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss"),checkpoint_callback],
+                    # default_root_dir=f"checkpoints/{self.task}_{self.model_id}",
+                    # enable_checkpointing=True
                 )
 
                 hyperparameters = dict(lr=learning_rate, seq_len=_data.seq_len, future=_data.future,
                                        model_size = model_size)
                 self.trainer.logger.log_hyperparams(hyperparameters)
 
-            # self.plot_test(version="before")
             self.trainer.fit(self.learn)
         
             if optimise:
                return self.trainer.callback_metrics["val_loss"].item()
+            
+    def denormalize(self,tensor,values="x"):
+        return tensor * self.std[values] + self.mean[values]
 
     def test(self):
         self.trainer.test(self.learn)
-        if self.n_epochs > 10: 
+        if self.n_epochs > 1: 
             self.plot_test(version="after")
         else:
             self.plot_test(version="before")
@@ -310,6 +363,8 @@ class ForecastModel:
             x, y = _batch
             y_hat, _ = self._model.forward(x)
             y_hat = y_hat.view_as(y)
+            y = self.denormalize(y,"y")
+            y_hat = self.denormalize(y_hat,"y")
             y_list.append(y[:,-1,:])
             y_hat_list.append(y_hat[:,-1,:])
         y = torch.cat(y_list,dim=0).detach().numpy()
@@ -325,11 +380,8 @@ class ForecastModel:
 
         plt.suptitle(f"{version} training")
         plt.tight_layout()
-        plt.savefig(f"predictions_{self.task}_{version}.png")
+        plt.savefig(f"results/{self.task}_{self.model_id}_{version}.png")
         plt.close()
-
-
-
 
 data_classes = {
     "cheetah": CheetahData,
@@ -365,8 +417,9 @@ if __name__ == "__main__":
 
     # if args.future > 1:
     task = args.dataset + "_forecast"
+    model_id = dt.datetime.today().strftime("%Y%m%d%H")
     
-    model = ForecastModel(task=task,model_type=args.model)
+    model = ForecastModel(task=task,model_id = model_id,model_type=args.model)
     if not args.optimise:
         model.fit(_data=dataset_data,epochs=args.epochs,gpus=args.gpus,in_features=dataset_data.in_features, out_features = dataset_data.out_features,optimise=args.optimise,
                 learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,model_size=args.size)
@@ -380,7 +433,7 @@ if __name__ == "__main__":
 
         pruner = optuna.pruners.MedianPruner() if args.pruning else optuna.pruners.NopPruner()
         study = optuna.create_study(direction="minimize", pruner=pruner,
-                                    study_name=dt.datetime.today().strftime("%Y%m%d%H"),
+                                    study_name=model_id,
                                     # study_name = study_names[args.dataset],
         
                                     storage=storage,load_if_exists=True)
