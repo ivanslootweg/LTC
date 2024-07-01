@@ -4,6 +4,7 @@ import torch
 import torch.utils.data as data
 
 class SequenceLearner(pl.LightningModule):
+    # from: https://github.com/mlech26l/ncps/blob/master/examples/pt_example.py
     def __init__(self, model, loss_func, _loaderfunc,n_iterations,cosine_lr=False,learning_rate=0.005):
         super().__init__()
         self.model = model
@@ -12,17 +13,6 @@ class SequenceLearner(pl.LightningModule):
         self._loaderfunc = _loaderfunc
         self.n_iterations = n_iterations
         self.cosine_lr = cosine_lr
-
-    # def set_dataloaders(self,_loaderfunc):
-    #     self.train_dataloader = _loaderfunc(subset="train")
-    #     print(self.train_dataloader)
-    #     for _item in self.train_dataloader:
-    #         for _ in _item:
-    #             print(_.shape)
-    #         # print(_item.shape)
-    #         break
-    #     self.val_dataloader = _loaderfunc(subset="valid")
-    #     self.test_dataloader = _loaderfunc(subset="test")
     
     def train_dataloader(self):
         # return self.train_dataloader
@@ -41,22 +31,19 @@ class SequenceLearner(pl.LightningModule):
         y_hat, _ = self.model.forward(x)
         y_hat = y_hat.view_as(y)
         loss = self.loss_func(y_hat, y)
-        normalized_diff = torch.mean( torch.abs((y-y_hat) / torch.sum(y)))
+        mae = torch.mean( torch.abs(y-y_hat))
         self.log("train_loss", loss, prog_bar=True)
-        self.log("train_normalized_diff", normalized_diff, prog_bar=True)
+        self.log("train_mae", mae, prog_bar=True)
         return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        # print("size in validation step: ", x.shape,y.shape)
         y_hat, _ = self.model.forward(x)
-        # print("pred: ", torch.unique(y_hat),"target: ", torch.unique(y))
-        # print("y: ", y.shape, "y_hat: ", y_hat.shape)
         y_hat = y_hat.view_as(y)
         loss = self.loss_func(y_hat, y)
-        normalized_diff = torch.mean(torch.abs((y-y_hat) / torch.sum(y)))
+        mae = torch.mean(torch.abs(y-y_hat))
         self.log("val_loss", loss, prog_bar=True)
-        self.log("val_normalized_diff",normalized_diff,prog_bar=True)
+        self.log("val_mae",mae,prog_bar=True)
         # self.log_dict({
         #     "accuracy":accuracy,
         #     "loss": loss})
@@ -74,7 +61,7 @@ class SequenceLearner(pl.LightningModule):
                     param_group['initial_lr'] = self.lr
             return {
                 "optimizer": optimizer,
-                "lr_scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max =self.n_iterations ,eta_min=0.001)
+                "lr_scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max =self.n_iterations ,eta_min=self.lr/20)
             }
         else:
             return optimizer
