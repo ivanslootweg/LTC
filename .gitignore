@@ -4,3 +4,4 @@ experiments_with_ltcs/lightning_logs
 .venvltc/
 experiments_with_ltcs/__pycache__/
 experiments_with_ltcs/checkpoints/
+.venv*/
