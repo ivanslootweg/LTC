@@ -200,35 +200,21 @@ def get_database_class(data_base):
     class DataBaseClass(data_base):
         def __init__(self,**kwargs):
             super().__init__(**kwargs)
-
-            print("train_x.shape:",str(self.train_x.shape),self.train_x.mean())
-            print("train_y.shape:",str(self.train_y.shape),self.train_y.mean())
-            print("valid_x.shape:",str(self.valid_x.shape),self.valid_x.mean())
-            print("valid_y.shape:",str(self.valid_y.shape),self.valid_y.mean())
-            print("test_x.shape:",str(self.test_x.shape),self.test_x.mean())
-            print("test_y.shape:",str(self.test_y.shape),self.test_y.mean())
+            dataset_names = ["train_x","train_y","valid_x", "valid_y","test_x","test_y"]
+            for _name in dataset_names:
+                _array = getattr(self,_name)
+                print(f"{_name} shape: ", str(_array.shape), str(_array.mean()))
+                _array = self.normalize(_array,_name.split("_")[-1])
+                print(f"{_name} post normalisation: ",_array.mean())
+                if "train" in _name:
+                    noise = np.random.normal(0, 0.1, _array.shape) 
+                    _array = _array + noise
+                    setattr(self,_name, _array)
+                print(f"{_name} post noise: ",str(_array.mean()))              
 
             self.in_features = self.train_x.shape[2]
             self.out_features = self.train_y.shape[2]
 
-            # self.train_x = self.train_x / self.train_x_norm
-            # self.train_y = self.train_y / self.train_y_norm
-            # self.valid_x = self.valid_x / self.valid_x_norm
-            # self.valid_y = self.valid_y / self.valid_y_norm
-            # self.test_x = self.test_x / self.test_x_norm
-            # self.test_y = self.test_y / self.test_y_norm
-            self.train_x = self.normalize(self.train_x,"x")
-            self.train_y = self.normalize(self.train_y,"y")
-            self.valid_x = self.normalize(self.valid_x,"x")
-            self.valid_y = self.normalize(self.valid_y,"y")
-            self.test_x = self.normalize(self.test_x,"x")
-            self.test_y = self.normalize(self.test_y,"y")
-            print("train_x.shape:",str(self.train_x.shape),self.train_x.mean())
-            print("train_y.shape:",str(self.train_y.shape),self.train_y.mean())
-            print("valid_x.shape:",str(self.valid_x.shape),self.valid_x.mean())
-            print("valid_y.shape:",str(self.valid_y.shape),self.valid_y.mean())
-            print("test_x.shape:",str(self.test_x.shape),self.test_x.mean())
-            print("test_y.shape:",str(self.test_y.shape),self.test_y.mean())
 
         def get_dataloader(self,subset="train"):
             # dataloader input of shapes [BATCH,series_length,features]
@@ -405,7 +391,6 @@ study_names = {
 
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--model',default="ltc")
     parser.add_argument('--size',default=32,type=int)
