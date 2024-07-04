@@ -249,7 +249,7 @@ def get_database_class(data_base):
                     noise = np.random.normal(0, 0.1, _array.shape) 
                     _array = _array + noise
                     setattr(self,_name, _array)
-                print(f"{_name} post noise: ",str(_array.mean()))              
+                    print(f"{_name} post noise: ",str(_array.mean()))              
 
             self.in_features = self.train_x.shape[2]
             self.out_features = self.train_y.shape[2]
@@ -408,15 +408,39 @@ class ForecastModel:
         y = torch.cat(y_list,dim=0).detach().numpy()
         y_hat = torch.cat(y_hat_list,dim=0).detach().numpy()
         error = torch.cat(error_list,dim=0).detach().numpy()
+        print(f" y {y.shape} error {error.shape}")
+        fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
+        axes = axes.ravel()
+        for (feat_nr,ax) in zip(range(self.in_features),axes):
+            ax.plot(y[:,feat_nr],label="Target output",linewidth=1)
+            ax.plot(y_hat[:,feat_nr], label="NCP output",linewidth=1)
+            ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
+            ax.legend(loc='upper right')
+
+        plt.suptitle(f"{version} training")
+        plt.savefig(f"results/{self.task}_{self.model_id}_{version}_all_predictions.jpg")
+        plt.close()
 
         fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
         axes = axes.ravel()
+        for (feat_nr,ax) in zip(range(self.in_features),axes):
+            ax.plot(error[:,feat_nr], label="Prediction error",linewidth=1)
+            ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
+            ax.legend(loc='upper right')
+
+        plt.suptitle(f"{version} training")
+        plt.savefig(f"results/{self.task}_{self.model_id}_{version}_all=predictionss-error.jpg")
+        plt.close()
+        
         for future_point in range(self.future):
             future_point_indices = torch.LongTensor(list(range(0+future_point,y.shape[0]-self.future +future_point +1,self.future)))
             y_for_future = np.take(y, future_point_indices, 0)
             y_hat_for_future = np.take(y_hat,future_point_indices, 0)
             error_for_future = np.take(error, future_point_indices, 0)
-
+            # plot the predictions for each feature in a subplot
+            print(f" y_for_future {y_for_future.shape} error_for_future {error_for_future.shape}")
+            fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
+            axes = axes.ravel()
             for (feat_nr,ax) in zip(range(self.in_features),axes):
                 ax.plot(y_for_future[:,feat_nr],label="Target output",linewidth=1)
                 ax.plot(y_hat_for_future[:,feat_nr], label="NCP output",linewidth=1)
@@ -427,6 +451,7 @@ class ForecastModel:
             plt.savefig(f"results/{self.task}_{self.model_id}_{version}_{future_point}.jpg")
             plt.close()
 
+            # plot the error for each feature in a subplot
             fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
             axes = axes.ravel()
             for (feat_nr,ax) in zip(range(self.in_features),axes):
@@ -475,6 +500,8 @@ if __name__ == "__main__":
     # if args.future > 1:
     task = args.dataset + "_forecast"
     model_id = dt.datetime.today().strftime("%Y%m%d%H")
+
+    print(f" --------- model id: {model_id} --------- ")
     
     
     model = ForecastModel(task=task,model_id = model_id,model_type=args.model)

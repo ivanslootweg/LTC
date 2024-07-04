@@ -64,6 +64,7 @@ class OccupancyData:
         self.test_x = np.concatenate([test0_x,test1_x],axis=1)
         self.test_y = np.concatenate([test0_y,test1_y],axis=1)
         print("Total number of test sequences: {}".format(self.test_x.shape[1]))
+        print("x and y+")
 
         
 
