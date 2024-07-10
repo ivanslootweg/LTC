@@ -21,7 +21,6 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 import optuna
 from optuna.integration import PyTorchLightningPruningCallback
-
 import matplotlib.pyplot as plt
 
 
@@ -34,6 +33,18 @@ class NMSELoss(nn.Module):
         loss = torch.mean(((targets-inputs)**2))/ torch.mean(targets)
         return loss
     
+class MSELossfuture(nn.Module):
+    def __init__(self, n_future):
+        super(MSELossfuture, self).__init__()
+        self.n_future = n_future
+        self.loss = torch.nn.MSELoss()
+        print(" using loss on future only")
+    def forward(self, inputs, targets):
+        # normalzed mean squared error
+        loss = self.loss(inputs[:,-self.n_future:] ,targets[:,-self.n_future:])
+        return loss
+
+
 def load_trace():
     df = pd.read_csv("data/traffic/Metro_Interstate_Traffic_Volume.csv")
     holiday = (df["holiday"].values == None).astype(np.float32)
@@ -200,7 +211,6 @@ class CheetahData:
 
 class NeuronData:
     def __init__(self,seq_len=32,future=1,batch_size=16):
-        x, y = load_trace()
 
         self.seq_len = seq_len
         self.batch_size = batch_size
@@ -210,10 +220,14 @@ class NeuronData:
         train_x after cut : (?) * (32,7)
         after stack: (T, 32, 7). should be (32,T,7)
         """
-        x = np.load("data/neurons/activations.npy")
+        x = np.load("data/neurons/activations_f0.050000_w0.075000_n17_s5.npy")
         x = x.astype(np.float32)
         x = np.transpose(x)
-        train_x, train_y = cut_in_sequences(x,seq_len=seq_len, inc=2,prognosis=future)
+
+        print(f"timepoint numbers: {x.shape}")
+        inc = max(int(x.shape[0] / 1000),2)
+        print(inc, x.shape )
+        train_x, train_y = cut_in_sequences(x,seq_len=seq_len, inc=inc,prognosis=future)
         self.train_x = np.stack(train_x, axis=1) 
         self.train_y = np.stack(train_y, axis=1)
 
@@ -230,6 +244,7 @@ class NeuronData:
         self.test_y = self.train_y[:,permutation[valid_size : valid_size + test_size]]
         self.train_x = self.train_x[:,permutation[valid_size + test_size :]]
         self.train_y = self.train_y[:,permutation[valid_size + test_size :]]
+
 
         self.feature_labels = self.feature_labels = [f"neuron {i}" for i in range(self.train_x.shape[2])]
 
@@ -290,15 +305,14 @@ def get_database_class(data_base):
     return DataBaseClass
 
 
-class ForecastModel:
+class ForecastModel:    
     def __init__(self,task,model_id,model_type="ltc"):
         self.model_type = model_type
         self.task = task
         self.model_id = model_id
 
-    def fit(self,trial=None,_data=None,epochs=100,learning_rate=1e-2,cosine_lr=False,model_size=None,optimise=False,gpus=None,mixed_memory=False):
-            loss = torch.nn.MSELoss()
-            # loss = NMSELoss()
+    def fit(self,trial=None,_data=None,epochs=100,learning_rate=1e-2,cosine_lr=False,model_size=None,optimise=False,gpus=None,mixed_memory=False,future_loss = False):
+
             self.n_epochs = epochs
             self.future = _data.future
             self.feature_labels = _data.feature_labels
@@ -307,6 +321,10 @@ class ForecastModel:
             self.mean = _data.mean
             self.std = _data.std
             self.experiment_name = f"{self.task}_{self.model_id}"
+            if future_loss:
+                loss = MSELossfuture(n_future=self.future)
+            else:
+                loss = torch.nn.MSELoss()
 
             if not optimise:
                 self.model_size = model_size
@@ -381,6 +399,9 @@ class ForecastModel:
     def denormalize(self,tensor,values="x"):
         return tensor * self.std[values] + self.mean[values]
 
+    def normalize(self,tensor,values="x"):
+        return (tensor - self.mean[values]) / self.std[values]
+    
     def test(self):
         self.trainer.test(self.learn)
         if self.n_epochs > 1: 
@@ -390,6 +411,7 @@ class ForecastModel:
 
     def plot_test(self,version="before"):
         y_list = []
+        y_list_norm = []
         y_hat_list = []
         error_list = []
 
@@ -398,47 +420,59 @@ class ForecastModel:
             x, y = _batch
             y_hat, _ = self._model.forward(x)
             y_hat = y_hat.view_as(y)
-            y = self.denormalize(y,"y")
-            y_hat = self.denormalize(y_hat,"y")
-            error = y - y_hat
-            y_list.extend(y[:,-self.future:,:])
-            y_hat_list.extend(y_hat[:,-self.future:,:])
+            y_de = self.denormalize(y,"y")
+            y_hat_de = self.denormalize(y_hat,"y")
+            error = y_de - y_hat_de
+            y_list_norm.extend(y[:,-self.future:,:])
+            y_list.extend(y_de[:,-self.future:,:])
+            y_hat_list.extend(y_hat_de[:,-self.future:,:])
             error_list.extend(error[:,-self.future:,:])
+        # print("last 3 timepoints of test y ", y.shape, y[-3:,-self.future:])
 
         y = torch.cat(y_list,dim=0).detach().numpy()
+        y_norm = torch.cat(y_list_norm,dim=0).detach().numpy()
         y_hat = torch.cat(y_hat_list,dim=0).detach().numpy()
-        error = torch.cat(error_list,dim=0).detach().numpy()
-        print(f" y {y.shape} error {error.shape}")
-        fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
-        axes = axes.ravel()
-        for (feat_nr,ax) in zip(range(self.in_features),axes):
-            ax.plot(y[:,feat_nr],label="Target output",linewidth=1)
-            ax.plot(y_hat[:,feat_nr], label="NCP output",linewidth=1)
-            ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
-            ax.legend(loc='upper right')
-
-        plt.suptitle(f"{version} training")
-        plt.savefig(f"results/{self.task}_{self.model_id}_{version}_all_predictions.jpg")
-        plt.close()
-
-        fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
-        axes = axes.ravel()
-        for (feat_nr,ax) in zip(range(self.in_features),axes):
-            ax.plot(error[:,feat_nr], label="Prediction error",linewidth=1)
-            ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
-            ax.legend(loc='upper right')
-
-        plt.suptitle(f"{version} training")
-        plt.savefig(f"results/{self.task}_{self.model_id}_{version}_all=predictionss-error.jpg")
-        plt.close()
+        error = np.abs(torch.cat(error_list,dim=0).detach().numpy())
+        # print("last timepoint of test y ", y.shape, self.normalize(torch.tensor(y[-self.future:,]),"y"))
+        # print("1- last timepoint of test y ", y.shape, self.normalize(torch.tensor(y[-(2*self.future):-self.future,]),"y"))
+        # print("2- last timepoint of test y ", y.shape, self.normalize(torch.tensor(y[-(3*self.future):-(2*self.future),]),"y"))
         
+        
+        if self.future > 1:
+            fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
+            axes = axes.ravel()
+            for (feat_nr,ax) in zip(range(self.in_features),axes):
+                ax.plot(y[:,feat_nr],label="Target output",linewidth=1)
+                ax.plot(y_hat[:,feat_nr], label="NCP output",linewidth=1)
+                ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
+                ax.legend(loc='upper right')
+
+            plt.suptitle(f"{version} training")
+            plt.savefig(f"results/{self.task}_{self.model_id}_{version}_all_predictions.jpg")
+            plt.close()
+
+
+            fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
+            axes = axes.ravel()
+            for (feat_nr,ax) in zip(range(self.in_features),axes):
+                ax.plot(error[:,feat_nr], label="Prediction error",linewidth=1)
+                ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
+                ax.legend(loc='upper right')
+
+            plt.suptitle(f"{version} training")
+            plt.savefig(f"results/{self.task}_{self.model_id}_{version}_all_predictions-error.jpg")
+            plt.close()
+        
+        print(self.future)
         for future_point in range(self.future):
-            future_point_indices = torch.LongTensor(list(range(0+future_point,y.shape[0]-self.future +future_point +1,self.future)))
+            future_point_indices = torch.LongTensor(list(range(0+future_point,y.shape[0]- (self.future - future_point - 1),self.future)))
+            print(f" index: {future_point_indices[:3]} - {future_point_indices[-3:]}")
+            print(f" series for future {future_point} {np.take(y_norm,future_point_indices[-3:],0)}")
             y_for_future = np.take(y, future_point_indices, 0)
             y_hat_for_future = np.take(y_hat,future_point_indices, 0)
             error_for_future = np.take(error, future_point_indices, 0)
+
             # plot the predictions for each feature in a subplot
-            print(f" y_for_future {y_for_future.shape} error_for_future {error_for_future.shape}")
             fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
             axes = axes.ravel()
             for (feat_nr,ax) in zip(range(self.in_features),axes):
@@ -450,7 +484,6 @@ class ForecastModel:
             plt.suptitle(f"{version} training")
             plt.savefig(f"results/{self.task}_{self.model_id}_{version}_{future_point}.jpg")
             plt.close()
-
             # plot the error for each feature in a subplot
             fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
             axes = axes.ravel()
@@ -490,7 +523,8 @@ if __name__ == "__main__":
     parser.add_argument('--future',default=1,type=int)
     parser.add_argument('--optimise',action='store_true')
     parser.add_argument('--pruning',action='store_true')
-    parser.add_argument('--load_previous',type=int,default=0)
+    parser.add_argument('--model_id_shift',type=int,default=0)
+    parser.add_argument('--future_loss',action='store_true')
 
     args = parser.parse_args()
 
@@ -499,7 +533,7 @@ if __name__ == "__main__":
 
     # if args.future > 1:
     task = args.dataset + "_forecast"
-    model_id = dt.datetime.today().strftime("%Y%m%d%H")
+    model_id = str(int(dt.datetime.today().strftime("%Y%m%d%H"))  + args.model_id_shift)
 
     print(f" --------- model id: {model_id} --------- ")
     
@@ -507,7 +541,7 @@ if __name__ == "__main__":
     model = ForecastModel(task=task,model_id = model_id,model_type=args.model)
     if not args.optimise:
         model.fit(_data=dataset_data,epochs=args.epochs,gpus=args.gpus,optimise=args.optimise,mixed_memory=args.mixed_memory,
-                learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,model_size=args.size)
+                learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,model_size=args.size,future_loss=args.future_loss)
         model.test()
     
     else:
@@ -518,11 +552,11 @@ if __name__ == "__main__":
         
         pruner = optuna.pruners.MedianPruner() if args.pruning else optuna.pruners.NopPruner()
         study = optuna.create_study(direction="minimize", pruner=pruner,
-                                    study_name= str(int(model_id)-args.load_previous),
+                                    study_name= str(int(model_id)),
                                     storage=storage,load_if_exists=True)
         study.optimize(lambda trial: model.fit(trial=trial,  
                                             _data=dataset_data,epochs=args.epochs,gpus=args.gpus,optimise=args.optimise,mixed_memory=args.mixed_memory,
-                                            learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,model_size=args.size),
+                                            learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,model_size=args.size,future_loss=args.future_loss),
                         n_trials=100)
 
         print("Number of finished trials: {}".format(len(study.trials)))

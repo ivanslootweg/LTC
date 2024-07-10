@@ -6,3 +6,4 @@ experiments_with_ltcs/__pycache__/
 experiments_with_ltcs/checkpoints/
 experiments_with_ltcs/__pycache__/
 .venv*/
+./experiments_with_ltcs/__pycache__/*

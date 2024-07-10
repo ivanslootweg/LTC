@@ -1,0 +1,10 @@
+https://www.youtube.com/watch?v=sD97UaktgLc
+https://arxiv.org/pdf/1908.06491
+https://www.stat.berkeley.edu/~mmahoney/talks/sequential_prediction_jan22.pdf
+
+binning
+https://cbmm.mit.edu/sites/default/files/documents/Decoding_neural_info_processing.html
+https://arxiv.org/pdf/1302.5964
+
+conditioning RNN
+https://github.com/philipperemy/cond_rnn

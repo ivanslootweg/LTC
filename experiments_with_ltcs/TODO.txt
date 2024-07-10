@@ -1,0 +1,16 @@
+
+        WHAT                            |               STATUS
+Organisational  
+        decide on binning                   done. 50 ms 50% overlap
+        make neuron data class              done.           
+        inspect 17-neuron dataset           done. select 17 neuron, exclude neuron 9(8)
+        plot predictions and error          done.
+        select during sound activation      queue (3)
+        gaussian kernel                     queue (2)
+
+Model fitting
+        train with / without noise          done. continue without noise
+        experiment with mixed memory        done. use mixed memory
+        use predicted bins loss function    queue (1)
+Model implementation
+        predict more timestaps ahead        exprmented with 2 timesteps

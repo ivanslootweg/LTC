@@ -1,0 +1,10 @@
+numpy
+torch
+tensorboard
+optuna
+optuna-dashboard
+optuna-integration
+matplotlib
+pandas
+ncps
+pytorch-lightning==1.7.7
