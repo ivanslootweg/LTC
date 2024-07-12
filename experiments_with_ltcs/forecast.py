@@ -210,7 +210,7 @@ class CheetahData:
 
 
 class NeuronData:
-    def __init__(self,seq_len=32,future=1,batch_size=16):
+    def __init__(self,binwidth=0.05,seq_len=32,future=1,batch_size=16):
 
         self.seq_len = seq_len
         self.batch_size = batch_size
@@ -220,13 +220,15 @@ class NeuronData:
         train_x after cut : (?) * (32,7)
         after stack: (T, 32, 7). should be (32,T,7)
         """
-        x = np.load("data/neurons/activations_f0.050000_w0.075000_n17_s5.npy")
+        if binwidth == 0.05:
+            x = np.load("data/neurons/activations_f0.050000_w0.075000_n17.npy")
+        elif binwidth == 0.5:
+            x = np.load("data/neurons/activations_f0.5_w1.0.npy")
         x = x.astype(np.float32)
         x = np.transpose(x)
 
         print(f"timepoint numbers: {x.shape}")
         inc = max(int(x.shape[0] / 1000),2)
-        print(inc, x.shape )
         train_x, train_y = cut_in_sequences(x,seq_len=seq_len, inc=inc,prognosis=future)
         self.train_x = np.stack(train_x, axis=1) 
         self.train_y = np.stack(train_y, axis=1)
@@ -246,7 +248,53 @@ class NeuronData:
         self.train_y = self.train_y[:,permutation[valid_size + test_size :]]
 
 
-        self.feature_labels = self.feature_labels = [f"neuron {i}" for i in range(self.train_x.shape[2])]
+        self.feature_labels = self.feature_labels = [f"neuron {i}" for i in range(self.train_y.shape[2])]
+
+class NeuronLaserData:
+    def __init__(self,binwidth=0.05,seq_len=32,future=1,batch_size=16):
+
+        self.seq_len = seq_len
+        self.batch_size = batch_size
+        self.future = future
+        """ 
+        x: (20,T) -> transpose to (T,20)
+        train_x after cut : (?) * (32,7)
+        after stack: (T, 32, 7). should be (32,T,7)
+        """
+        if binwidth == 0.05:
+            x = np.load("data/neurons/activations_f0.050000_w0.075000_n17.npy")
+            x2 = np.load("data/neurons/laserpulses_f0.050000_w0.075000_n17.npy")
+        elif binwidth == 0.5:
+            x = np.load("data/neurons/activations_f0.5_w1.0.npy")
+            x2 = np.load("data/neurons/laserpulses_f0.5_w1.0.npy")
+        x = np.concatenate([x,x2], 0)
+        x = x.astype(np.float32)
+        x = np.transpose(x)
+
+        print(f"timepoint numbers: {x.shape}")
+        inc = max(int(x.shape[0] / 1000),2)
+        print(inc, x.shape )
+        train_x, train_y = cut_in_sequences(x,seq_len=seq_len, inc=inc,prognosis=future)
+        self.train_x = np.stack(train_x, axis=1) 
+        self.train_y = np.stack(train_y,axis=1)[:,:,:-1]
+        print(self.train_x.shape, self.train_y.shape)
+
+        # make train-test-val split
+        total_seqs = self.train_x.shape[1]
+
+        permutation = np.random.RandomState(23489).permutation(total_seqs)
+        valid_size = int(0.1 * total_seqs)
+        test_size = int(0.15 * total_seqs)
+
+        self.valid_x = self.train_x[:,permutation[:valid_size]]
+        self.valid_y = self.train_y[:,permutation[:valid_size]]
+        self.test_x = self.train_x[:,permutation[valid_size : valid_size + test_size]]
+        self.test_y = self.train_y[:,permutation[valid_size : valid_size + test_size]]
+        self.train_x = self.train_x[:,permutation[valid_size + test_size :]]
+        self.train_y = self.train_y[:,permutation[valid_size + test_size :]]
+
+
+        self.feature_labels = self.feature_labels = [f"neuron {i}" for i in range(self.train_y.shape[2])]
 
 
 def get_database_class(data_base):
@@ -310,6 +358,7 @@ class ForecastModel:
         self.model_type = model_type
         self.task = task
         self.model_id = model_id
+        self.checkpoint_dir = f"./checkpoints/{self.task}_{self.model_id}"
 
     def fit(self,trial=None,_data=None,epochs=100,learning_rate=1e-2,cosine_lr=False,model_size=None,optimise=False,gpus=None,mixed_memory=False,future_loss = False):
 
@@ -332,10 +381,16 @@ class ForecastModel:
                     # wiring = AutoNCP(model_size,out_features)
                     wiring = FullyConnected(model_size,self.out_features)
                     self._model = LTC(self.in_features,wiring,batch_first=True,mixed_memory=mixed_memory)
-                self.learn = SequenceLearner(self._model,loss,learning_rate=learning_rate,cosine_lr=cosine_lr,
-                                _loaderfunc=_data.get_dataloader,n_iterations=(_data.batch_size * epochs))
-                lr_logger = LearningRateMonitor(logging_interval='step')
-                            
+                # lr_logger = LearningRateMonitor(logging_interval='step') # this is a callback
+                
+                self.checkpoint_callback = ModelCheckpoint(
+                    save_top_k=1,
+                    monitor="val_loss",
+                    mode="min",
+                    dirpath=self.checkpoint_dir,
+                    filename="best_epoch",
+                )       
+
                 tensorboard_logger = TensorBoardLogger(save_dir="log",
                         version = f"{self.model_id}",
                         name=f"{self.task}_{self.model_type}")
@@ -354,20 +409,16 @@ class ForecastModel:
                     gradient_clip_val=1,
                     accelerator= 'cpu' if gpus is None else 'gpu',
                     devices=gpus,
-                    callbacks=[lr_logger],
+                    callbacks=[self.checkpoint_callback],
                 )
+
+                self.learn = SequenceLearner(self._model,loss,learning_rate=learning_rate,cosine_lr=cosine_lr,
+                    _loaderfunc=_data.get_dataloader,n_iterations=(_data.batch_size * epochs))
 
             else:
                 learning_rate = trial.suggest_float("learning_rate",1e-4,1e-2)
                 cosine_lr = trial.suggest_int("cosine_lr",0,1) if cosine_lr else 0
                 model_size = trial.suggest_int("model_size",self.out_features +3,48,4)
-                checkpoint_callback = ModelCheckpoint(
-                    save_top_k=1,
-                    monitor="val_loss",
-                    mode="min",
-                    dirpath=f"./checkpoints/{self.task}_{self.model_id}",
-                    filename="{epoch:02d}-{val_loss:.2f}",
-                )
 
                 self.model_size = model_size
                 if(self.model_type.startswith("ltc")):
@@ -375,15 +426,14 @@ class ForecastModel:
                     # wiring = AutoNCP(model_size,self.out_features)
                     wiring = FullyConnected(model_size,self.out_features)
                     self._model = LTC(self.in_features,wiring,batch_first=True,mixed_memory=mixed_memory)
-                self.learn = SequenceLearner(self._model,loss,learning_rate=learning_rate,cosine_lr=cosine_lr,
-                                _loaderfunc=_data.get_dataloader,n_iterations=(_data.batch_size * epochs))
+
                 self.trainer = pl.Trainer(
                     logger = True,
                     max_epochs= epochs,
                     gradient_clip_val=1,
                     accelerator= 'cpu' if gpus is None else 'gpu',
                     devices=gpus,
-                    callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss"),checkpoint_callback],
+                    callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss")],
 
                 )
 
@@ -391,6 +441,9 @@ class ForecastModel:
                                        model_size = model_size)
                 self.trainer.logger.log_hyperparams(hyperparameters)
 
+                self.learn = SequenceLearner(self._model,loss,learning_rate=learning_rate,cosine_lr=cosine_lr,
+                    _loaderfunc=_data.get_dataloader,n_iterations=(_data.batch_size * epochs))
+                
             self.trainer.fit(self.learn)
         
             if optimise:
@@ -403,7 +456,9 @@ class ForecastModel:
         return (tensor - self.mean[values]) / self.std[values]
     
     def test(self):
-        self.trainer.test(self.learn)
+        self.trainer.save_checkpoint(f"{self.checkpoint_dir}/last_epoch.ckpt")
+        # self.learn.load_from_checkpoint(self.checkpoint_callback.best_model_path)
+        self.trainer.test(self.learn, ckpt_path="best")
         if self.n_epochs > 1: 
             self.plot_test(version="after")
         else:
@@ -423,25 +478,18 @@ class ForecastModel:
             y_de = self.denormalize(y,"y")
             y_hat_de = self.denormalize(y_hat,"y")
             error = y_de - y_hat_de
-            y_list_norm.extend(y[:,-self.future:,:])
             y_list.extend(y_de[:,-self.future:,:])
             y_hat_list.extend(y_hat_de[:,-self.future:,:])
             error_list.extend(error[:,-self.future:,:])
-        # print("last 3 timepoints of test y ", y.shape, y[-3:,-self.future:])
 
         y = torch.cat(y_list,dim=0).detach().numpy()
-        y_norm = torch.cat(y_list_norm,dim=0).detach().numpy()
         y_hat = torch.cat(y_hat_list,dim=0).detach().numpy()
         error = np.abs(torch.cat(error_list,dim=0).detach().numpy())
-        # print("last timepoint of test y ", y.shape, self.normalize(torch.tensor(y[-self.future:,]),"y"))
-        # print("1- last timepoint of test y ", y.shape, self.normalize(torch.tensor(y[-(2*self.future):-self.future,]),"y"))
-        # print("2- last timepoint of test y ", y.shape, self.normalize(torch.tensor(y[-(3*self.future):-(2*self.future),]),"y"))
-        
-        
+
         if self.future > 1:
-            fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
+            fig, axes = plt.subplots(self.out_features, 1, figsize=(30,4*self.out_features),constrained_layout=True)
             axes = axes.ravel()
-            for (feat_nr,ax) in zip(range(self.in_features),axes):
+            for (feat_nr,ax) in zip(range(self.out_features),axes):
                 ax.plot(y[:,feat_nr],label="Target output",linewidth=1)
                 ax.plot(y_hat[:,feat_nr], label="NCP output",linewidth=1)
                 ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
@@ -452,9 +500,9 @@ class ForecastModel:
             plt.close()
 
 
-            fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
+            fig, axes = plt.subplots(self.out_features, 1, figsize=(30,4*self.out_features),constrained_layout=True)
             axes = axes.ravel()
-            for (feat_nr,ax) in zip(range(self.in_features),axes):
+            for (feat_nr,ax) in zip(range(self.out_features),axes):
                 ax.plot(error[:,feat_nr], label="Prediction error",linewidth=1)
                 ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
                 ax.legend(loc='upper right')
@@ -463,19 +511,16 @@ class ForecastModel:
             plt.savefig(f"results/{self.task}_{self.model_id}_{version}_all_predictions-error.jpg")
             plt.close()
         
-        print(self.future)
         for future_point in range(self.future):
             future_point_indices = torch.LongTensor(list(range(0+future_point,y.shape[0]- (self.future - future_point - 1),self.future)))
-            print(f" index: {future_point_indices[:3]} - {future_point_indices[-3:]}")
-            print(f" series for future {future_point} {np.take(y_norm,future_point_indices[-3:],0)}")
             y_for_future = np.take(y, future_point_indices, 0)
             y_hat_for_future = np.take(y_hat,future_point_indices, 0)
             error_for_future = np.take(error, future_point_indices, 0)
 
             # plot the predictions for each feature in a subplot
-            fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
+            fig, axes = plt.subplots(self.out_features, 1, figsize=(30,4*self.out_features),constrained_layout=True)
             axes = axes.ravel()
-            for (feat_nr,ax) in zip(range(self.in_features),axes):
+            for (feat_nr,ax) in zip(range(self.out_features),axes):
                 ax.plot(y_for_future[:,feat_nr],label="Target output",linewidth=1)
                 ax.plot(y_hat_for_future[:,feat_nr], label="NCP output",linewidth=1)
                 ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
@@ -485,9 +530,9 @@ class ForecastModel:
             plt.savefig(f"results/{self.task}_{self.model_id}_{version}_{future_point}.jpg")
             plt.close()
             # plot the error for each feature in a subplot
-            fig, axes = plt.subplots(self.in_features, 1, figsize=(30,4*self.in_features),constrained_layout=True)
+            fig, axes = plt.subplots(self.out_features, 1, figsize=(30,4*self.out_features),constrained_layout=True)
             axes = axes.ravel()
-            for (feat_nr,ax) in zip(range(self.in_features),axes):
+            for (feat_nr,ax) in zip(range(self.out_features),axes):
                 ax.plot(error_for_future[:,feat_nr], label="Prediction error",linewidth=1)
                 ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
                 ax.legend(loc='upper right')
@@ -500,7 +545,8 @@ data_classes = {
     "cheetah": CheetahData,
     "traffic": TrafficData,
     "occupancy": OccupancyData,
-    "neurons": NeuronData
+    "neurons": NeuronData,
+    "neuronlaser": NeuronLaserData
 }
 
 study_names = {
@@ -525,11 +571,12 @@ if __name__ == "__main__":
     parser.add_argument('--pruning',action='store_true')
     parser.add_argument('--model_id_shift',type=int,default=0)
     parser.add_argument('--future_loss',action='store_true')
+    parser.add_argument('--binwidth',default =0.05, type= float)
 
     args = parser.parse_args()
 
     some_data_class = get_database_class(data_classes[args.dataset])
-    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len)
+    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len,binwidth=args.binwidth)
 
     # if args.future > 1:
     task = args.dataset + "_forecast"
