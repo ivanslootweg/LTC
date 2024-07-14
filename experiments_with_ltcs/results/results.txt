@@ -17,8 +17,8 @@ TIMESTAMP
 2           0.05    53      1           0.022       36     0.4774   1208    ALL     
 > does including timestamp improve performance?
 OTHER TRAINSPLIT METHOD
-2           0.05    53      1           9.74E-3     24     0.4774   1210    FUTURE 10-1 (hpar 1212 (error 1417) 14-1 future 5)
-2           0.05    53      1           6.62E-3     28     0.4774   1211    ALL    14-0 (hpar 1213 (error 2024071418) 13-0 future 5)
+2           0.05    53      1           9.74E-3     24     0.4774   1210    FUTURE 10-1 (hpar 1212 (error 1419) 14-1 future 5)
+2           0.05    53      1           6.62E-3     28     0.4774   1211    ALL    14-0 (hpar 1213 (error 2024071419) 13-0 future 5)
 >　how is performance with timestamp data ?
 
 

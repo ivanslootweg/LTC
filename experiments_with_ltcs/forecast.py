@@ -607,7 +607,7 @@ if __name__ == "__main__":
                 engine_kwargs={"connect_args": {"timeout": 100}},
         )
         
-        pruner = ptuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=2) if args.pruning else optuna.pruners.NopPruner()
+        pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=2) if args.pruning else optuna.pruners.NopPruner()
         study = optuna.create_study(direction="minimize", pruner=pruner,
                                     study_name= str(int(model_id)),
                                     storage=storage,load_if_exists=True)
