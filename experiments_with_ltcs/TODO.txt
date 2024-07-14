@@ -5,14 +5,16 @@ Organisational
         make neuron data class              done.           
         inspect 17-neuron dataset           done. select 17 neuron, exclude neuron 9(8) (8/07)
         plot predictions and error          done.
-        select during sound /laser activation      queue (1)
+        select during sound /laser activation  done. (12/07)
                 extra class?
                 concat pulses on dimension
                 calcuate how many bins between activations
-        check results of running exps       queue(2)
         gaussian kernel                     done.
         install gpu                         done. (10/07)
         troubleshoot gpu                    done. ( 2 days in week of 1/07)
+        better train test split
+        where test data is not part of      done. (12 07)
+        train input     
 
 Model fitting
         train with / without noise          done. continue without noise (week of 1/07 or week before)
@@ -26,4 +28,5 @@ Model implementation
         real-time implementation in python 
         read into jean`s work
         connect to kaede                    done  (10./07)
+
 

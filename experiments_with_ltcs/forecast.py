@@ -218,10 +218,10 @@ class NeuronData:
         """ 
         x: (20,T) -> transpose to (T,20)
         train_x after cut : (?) * (32,7)
-        after stack: (T, 32, 7). should be (32,T,7)
+        after stack:  (32,T,7)
         """
         if binwidth == 0.05:
-            x = np.load("data/neurons/activations_f0.050000_w0.075000_n17.npy")
+            x = np.load("data/neurons/activations_f0.050000_w0.075000_n17_s5.npy")
         elif binwidth == 0.5:
             x = np.load("data/neurons/activations_f0.5_w1.0.npy")
         x = x.astype(np.float32)
@@ -259,42 +259,52 @@ class NeuronLaserData:
         """ 
         x: (20,T) -> transpose to (T,20)
         train_x after cut : (?) * (32,7)
-        after stack: (T, 32, 7). should be (32,T,7)
+        after stack: should be (32,T,7)
         """
         if binwidth == 0.05:
-            x = np.load("data/neurons/activations_f0.050000_w0.075000_n17.npy")
+            x = np.load("data/neurons/activations_f0.050000_w0.075000_n17_s5.npy")
             x2 = np.load("data/neurons/laserpulses_f0.050000_w0.075000_n17.npy")
         elif binwidth == 0.5:
             x = np.load("data/neurons/activations_f0.5_w1.0.npy")
             x2 = np.load("data/neurons/laserpulses_f0.5_w1.0.npy")
+        print(x.shape,x2.shape)
         x = np.concatenate([x,x2], 0)
         x = x.astype(np.float32)
         x = np.transpose(x)
 
         print(f"timepoint numbers: {x.shape}")
-        inc = max(int(x.shape[0] / 1000),2)
-        print(inc, x.shape )
-        train_x, train_y = cut_in_sequences(x,seq_len=seq_len, inc=inc,prognosis=future)
-        self.train_x = np.stack(train_x, axis=1) 
-        self.train_y = np.stack(train_y,axis=1)[:,:,:-1]
-        print(self.train_x.shape, self.train_y.shape)
+        # train val test split
+        self.train_data,self.valid_data,self.test_data = self.train_test_split(x)
+        self.increment = max(int(x.shape[0] / 1000),2)
 
-        # make train-test-val split
-        total_seqs = self.train_x.shape[1]
+        # cut the data into x and y sequences
+        dataset_names = ["train_data","valid_data", "test_data"]
+        for _name in dataset_names:
+            _array = getattr(self,_name)
+            temp_x,temp_y = cut_in_sequences(_array,seq_len=seq_len, inc=self.increment,prognosis=future)
+            temp_x = np.stack(temp_x, axis=1) 
+            temp_y = np.stack(temp_y, axis=1)[:,:,:-1]
+            setattr(self,f"{_name.split('_')[0]}_x",temp_x)    
+            setattr(self,f"{_name.split('_')[0]}_y",temp_y)  
 
-        permutation = np.random.RandomState(23489).permutation(total_seqs)
-        valid_size = int(0.1 * total_seqs)
-        test_size = int(0.15 * total_seqs)
-
-        self.valid_x = self.train_x[:,permutation[:valid_size]]
-        self.valid_y = self.train_y[:,permutation[:valid_size]]
-        self.test_x = self.train_x[:,permutation[valid_size : valid_size + test_size]]
-        self.test_y = self.train_y[:,permutation[valid_size : valid_size + test_size]]
-        self.train_x = self.train_x[:,permutation[valid_size + test_size :]]
-        self.train_y = self.train_y[:,permutation[valid_size + test_size :]]
+        self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
 
 
-        self.feature_labels = self.feature_labels = [f"neuron {i}" for i in range(self.train_y.shape[2])]
+    
+    def train_test_split(self,x) :
+        val_size = int(np.floor(x.shape[0] *0.15))
+        N = x.shape[0]  
+        start_val = np.random.RandomState(37923).randint(0, (N - (self.seq_len+self.future)) - val_size)
+        
+        # Determine valid range for the second chunk start index to ensure non-overlapping
+        test_start_indices = list(set(range((N - (self.seq_len+self.future)) - val_size)) - set(range(start_val-val_size, start_val + val_size)))
+        start_test = np.random.RandomState(23726).choice(test_start_indices)
+        
+        # Extract parts of the array before the first chunk, between the chunks, and after the second chunk
+        val_data = x[start_val:start_val +val_size]
+        test_data = x[start_test:start_test +val_size]
+        train_data = np.delete(x,list(set(range(start_test,start_test+val_size)) | set(range(start_val,start_val+val_size))),axis =0)
+        return (train_data,val_data,test_data)
 
 
 def get_database_class(data_base):
