@@ -26,6 +26,10 @@ class SequenceLearner(pl.LightningModule):
     def test_dataloader(self):
         # return self.test_dataloader
         return self._loaderfunc(subset="test")
+    
+    def predict_dataloader(self):
+        # return self.test_dataloader
+        return self._loaderfunc(subset="predict")
 
     def training_step(self, batch, batch_idx):
         x, y = batch
