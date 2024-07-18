@@ -4,24 +4,51 @@ FUTURE　| BIN_D |   inc |   MIXED MEM | LR       | SIZE |   TEST  | ID    | LOS
 1           0.5     2       1           7.28E-3     27      5.22    0504    ALL         
 1           0.5     2       1           9.29E-4     39      4.31    0506    ALL
 >　use mixed memory with large network SIZE
-2           0.5     2       1           9.29E-4     39      8.39    0506    ALL                             1204        8.031
-2           0.05    53      1           6.62E-3     28      0.4704  1203    ALL     0910            14-0	    
+2           0.5     2       1           9.29E-4     39      8.39    0506    ALL                                   
+2           0.05    53      1           6.62E-3     28      0.4704  1203    ALL     0910           	    
 >　how is small binning?
 2           0.05    53      1                          <LOSS ERROR> 1002    FUTURE  0911            
-2           0.05    53      1           7.67E-4     20     0.8387   1103    FUTURE  1006            03-0    1202      0.6435
-2           0.05    53      1           9.74E-3     24     0.7850   1104    FUTURE  1006            03-1    1201      0.5828
+2           0.05    53      1           7.67E-4     20     0.8387   1103    FUTURE  1006            
+2           0.05    53      1           9.74E-3     24     0.7850   1104    FUTURE  1006              
 >  does other loss improve?       
 4           0.05    53                  9.9E-3      40     0.7913   1110            1017               dcluser
-> how is performance for predicting 0.05*4(0.2) sec?
+> how is performance for predicting 0.05*4(0.2) sec? 
 TIMESTAMP    
 2           0.05    53      1           0.022       36     0.4774   1208    ALL     
 > does including timestamp improve performance?
 OTHER TRAINSPLIT METHOD
-2           0.05    53      1           9.74E-3     24     0.4774   1210    FUTURE 10-1 (hpar 1212 (error 1419) 14-1 future 5)
-2           0.05    53      1           6.62E-3     28     0.4774   1211    ALL    14-0 (hpar 1213 (error 2024071419) 13-0 future 5)
+5           0.05    53      1	        9.51e-4	    24     0.7961   1603    FUTURE  1419. 1212 error with bins   trial 9, 41, 31
+5           0.05    53      1           2.96e-4 	32     0.7996   1604    FUTURE  1419
+2           0.05    53      1           0.01        44              1609    FUTURE  1419
+
+5           0.05    53      1           6.62E-3     28     0.4774   1211    ALL     1213 error with bins. 
+5           0.05    53      1                                 -      -      ALL     1512    
+5           0.05    53      1           1.57e-3     32     0.7414   1607    ALL     1512  
+5           0.05    53      1           1.37e-4     32     0.75398  1608    ALL     1512   
+
+1           0.05    53      1           0.005       36     0.1955   1804    FUTURE　(same as 1208, new split)  10-2 
+1           0.05    53      1           0.022       36     0.2565   1606    ALL　(same as 1208 but new split)  
+
+
+
 >　how is performance with timestamp data ?
+(for iterative prediction)
+1/5         0.05    53      1                                              FUTURE   1708    used best val loss . change to last. redundant
+1/5         0.05    53      1          	0.00181 	48      0.4766   1803  FUTURE   1711    
+1/5         0.05    53      1           0.01        36      0.3411   1709  FUTURE     -     
+1/5         0.05    53      1           0.01        48               1802  ALL   
 
 
-python forecast.py --size 36 --epochs 200 --gpus 1 --initial_lr 0.022 --dataset 
-neuronlaser --future 2 --seq_len 32 --binwidth 0.05
+python forecast.py --size 36 --epochs 200 --gpus 1 --initial_lr 0.022 --dataset neuronlaser --future 2 --seq_len 32 --binwidth 0.05
+
+Comparisons
+
+FUTURE      LOSS        INCREMENTAL         ID
+5           ALL         -                   1607 <
+5           FUTURE      -                   1604 <
+1           ALL         -                   1606 <
+1           FUTURE      -                   1804 <
+5           ALL         +                   1803 <
+5           FUTURE      +                   1802
+
 

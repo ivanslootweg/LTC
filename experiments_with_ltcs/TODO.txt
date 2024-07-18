@@ -1,32 +1,63 @@
 
         WHAT                            |               STATUS
 Organisational  
-        decide on binning                   done. 50 ms 50% overlap (8/07)
-        make neuron data class              done.           
-        inspect 17-neuron dataset           done. select 17 neuron, exclude neuron 9(8) (8/07)
-        plot predictions and error          done.
-        select during sound /laser activation  done. (12/07)
+        decide on binning                       one. 50 ms 50% overlap (8 07)
+        make neuron data class                  done.           
+        inspect 17-neuron dataset               done. select 17 neuron, exclude neuron 9(8) (8 07)
+        plot predictions and error              done.
+        select during sound /laser activation   done. (12 07)
                 extra class?
                 concat pulses on dimension
                 calcuate how many bins between activations
-        gaussian kernel                     done.
-        install gpu                         done. (10/07)
-        troubleshoot gpu                    done. ( 2 days in week of 1/07)
-        better train test split
-        where test data is not part of      done. (12 07)
-        train input     
+        gaussian kernel                         done.
+        install gpu                             done. (10 07)
+        troubleshoot gpu                        done. (2 days in week of 1 07)
+        better train test split                 done. 12 07
+        where test data is not part of          done. (12 07)
+        look into left hamming somoothing       done. 16 07. use gaussian smoothing
+
 
 Model fitting
-        train with / without noise          done. continue without noise (week of 1/07 or week before)
-        experiment with mixed memory        done. use mixed memory
-        use predicted bins loss function    done.       (8/07)
-        test predictions on BEST Model      done. (12/07)
-                remove checkpoint callback from optuna
-                add checkpoint callback to non-optuna
+        train with / without noise              done. continue without noise (week of 1/07 or week before)
+        experiment with mixed memory            done. use mixed memory
+        use predicted bins loss function        done.       (8 07)
+        test predictions on BEST Model          done. (12 07)
+        compare iterative prediction with       queue (2)
+                future 5 prediction             
+
 Model implementation
-        predict more timestaps ahead        experimented with 2 timesteps  
-        real-time implementation in python 
-        read into jean`s work
-        connect to kaede                    done  (10./07)
+        predict more timestaps ahead            experimented with 2 timesteps  
+        predict with laser activations  
+                optuna                          done (13-15 7)
+                runnning with both loss funcs   trial 31, trial 34, trial 45
+        connect to kaede                        done  (10 07)
+        multi-step forecasting plotting         done 16 07
+                code share with non-sequential
+                make prediction set
+        sequential prediction set               done 16 07
+                obtain test chunk       
+                make test data with 1 increment for val score 
+                >make predict data with increment = future
+                >normalize predict data 
+                >make predict dataloader
+        incremental prediction plotting         done. 1707
+        scheduled sampling in training          queue (3)
+        revisit chunk selection.                done 16 07. training data seqs are from same chunk. sequential val and test chunks. random train chunks
+        implement predict datasets              queue(4)
+                for other classes, if necessary 
+        implement realtime prediction           queue(1). see comments in realtime func
+                and plotting                    
+        real-time implementation in python      pending (17/18 07)
+        read into jean`s work                   pending
+
+today todo (1707)
+        fix printing of constant numbers in plot        done. error was in increments in batches 
+        implement predict data for neuron data          done
+        run iterative predict by training with earlier found params   running   
+        run optuna for 1 step ahead prediction          running
+
+        include the laser activation at the first future position (-future)!
 
 
+running ALL 10-2
+running FUTURE LOSS 10-0 
