@@ -141,11 +141,6 @@ class RealtimeForecastModel(ForecastModel):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.set_model()
-        try:    
-            self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model)
-        except: 
-            self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model)
-        self.learn.eval()
         self.total_read_timesteps = 0
         self.trainer = pl.Trainer()
         self.load_realtime = kwargs["_data"].load_realtime_data
@@ -155,7 +150,13 @@ class RealtimeForecastModel(ForecastModel):
         self.plot_condition = threading.Condition()
         self.data_condition = kwargs["_data"].data_condition
 
-    def run(self,recording_id):  
+    def run(self,recording_id,gpus):  
+        try:    
+            self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
+        except: 
+            self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
+        self.learn.eval()
+
         # instantiate dual observer
         self.recording_id = recording_id
         data_handler = DataHandler(recording_id,self.load_realtime)
@@ -285,7 +286,7 @@ if __name__ == "__main__":
     dummy_data_thread = threading.Thread(target=create_dummy_data, args=(recording_id,))
     dummy_data_thread.start()
     # Run the main model's run method
-    model.run(recording_id)
+    model.run(recording_id,gpus=args.gpus[0])
 
     # Wait for the dummy data thread to finish if needed
     dummy_data_thread.join()

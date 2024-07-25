@@ -14,7 +14,7 @@ def create_dummy_data(recording_id="dummy"):
     sample_length = 32
     frates = {k : 1-np.abs(random.uniform(-0.2,0.8))  for k in range(n_neurons)}
     fake_spikes = list(map(lambda neuron : [random.uniform(0,sample_length) for i in range(int(frates[neuron] * sample_length))], range(n_neurons)))
-    # time.sleep(30)
+    time.sleep(20)
     # print("start creating dummy data")
     if not os.path.exists(f"recordings/{recording_id}"):
         os.makedirs(f"recordings/{recording_id}")
