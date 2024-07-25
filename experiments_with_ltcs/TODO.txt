@@ -1,5 +1,7 @@
 
         WHAT                            |               STATUS
+
+
 Organisational  
         decide on binning                       one. 50 ms 50% overlap (8 07)
         make neuron data class                  done.           
@@ -22,7 +24,7 @@ Model fitting
         experiment with mixed memory            done. use mixed memory
         use predicted bins loss function        done.       (8 07)
         test predictions on BEST Model          done. (12 07)
-        compare iterative prediction with       queue (2)
+        compare iterative prediction with       pending 1807
                 future 5 prediction             
 
 Model implementation
@@ -41,23 +43,52 @@ Model implementation
                 >normalize predict data 
                 >make predict dataloader
         incremental prediction plotting         done. 1707
-        scheduled sampling in training          queue (3)
+        scheduled sampling in training          queue (1)
         revisit chunk selection.                done 16 07. training data seqs are from same chunk. sequential val and test chunks. random train chunks
-        implement predict datasets              queue(4)
-                for other classes, if necessary 
-        implement realtime prediction           queue(1). see comments in realtime func
-                and plotting                    
         real-time implementation in python      pending (17/18 07)
-        read into jean`s work                   pending
+        read into jean`s work                   pending 16,17 07
+        write code for resuming                 done 18 07
+        implement predict datasets              done 2207
+                for other classes, if necessary 
+        implement realtime prediction           done. 2207 left to do : conver to bins
+                and plotting   
+        for plots include the laser activation  done. 2207 (not in plot but present in data)
+                at the first future position 
+                (-future)!
+        implement predict function in learner   queue (3)    
+        read into jean's system                 queue (2)   
+        realtime predicting                     done 2407
+                with file locks 
+                seperate plot and predict
+        
+        fix plot function + run for 400 epochs  done 2307
+                + evaluate all models           
+
+
+
 
 today todo (1707)
-        fix printing of constant numbers in plot        done. error was in increments in batches 
-        implement predict data for neuron data          done
-        run iterative predict by training with earlier found params   running   
-        run optuna for 1 step ahead prediction          running
+       RERUN AL INFERENCE ON BEST EPOCH
 
-        include the laser activation at the first future position (-future)!
+        
 
 
 running ALL 10-2
 running FUTURE LOSS 10-0 
+
+redo 1604 1603 best//last with 5 history   DONE
+
+redo all above 1808 best
+
+evaluate 1907 again
+enter 1811 resulst
+
+export the results as images
+crop the images
+paste into a new powerpoint
+rerunning all models
+
+TO DO :
+
+handle the fact that the realtime data does not have laser data
+and therefore this is not normalised

@@ -1,4 +1,4 @@
-FUTURE　| BIN_D |   inc |   MIXED MEM | LR       | SIZE |   TEST  | ID    | LOSS  | HPARAMS
+FUTURE　| BIN_D |   inc |   MIXED MEM | LR       | SIZE |   TEST  | ID    | LOSS  | HPARAMS | LAST LOSS
 1           0.5     2       0           9.7E-3      39      6.327   0409    ALL     0308     
 1           0.5     2       0           6.45E-4     23      9.083   0410    ALL     0308 
 1           0.5     2       1           7.28E-3     27      5.22    0504    ALL         
@@ -17,38 +17,44 @@ TIMESTAMP
 2           0.05    53      1           0.022       36     0.4774   1208    ALL     
 > does including timestamp improve performance?
 OTHER TRAINSPLIT METHOD
-5           0.05    53      1	        9.51e-4	    24     0.7961   1603    FUTURE  1419. 1212 error with bins   trial 9, 41, 31
-5           0.05    53      1           2.96e-4 	32     0.7996   1604    FUTURE  1419
-2           0.05    53      1           0.01        44              1609    FUTURE  1419
+5           0.05    53      1	        9.51e-4	    24     0.7293   1603    FUTURE  1419 0.9451
+5           0.05    53      1           2.96e-4 	32     0.7485   1604    FUTURE  1419 0.74855  < best not done training. 2304 for 400 epochs ( 0.9103 | 0.73073 )
+5           0.05    53      1           1/2e-4      36     0.7302   2205    FUTURE　　　  0.7379 
 
-5           0.05    53      1           6.62E-3     28     0.4774   1211    ALL     1213 error with bins. 
-5           0.05    53      1                                 -      -      ALL     1512    
-5           0.05    53      1           1.57e-3     32     0.7414   1607    ALL     1512  
-5           0.05    53      1           1.37e-4     32     0.75398  1608    ALL     1512   
+5           0.05    53      1           1.57e-3     32     0.7209   1607    ALL     1512 0.8400
+5           0.05    53      1           1.37e-4     32     0.7411   1608    ALL     1512 0.7411  < best not done training. 2303 for 400 epochs (0.7266 | 0.7244)
+5           0.05    53      1           1/5e-4      36     0.7241   2206    ALL　        0.7243 
+these　models tend to overfit
+2304 vs 1604: 2304 last fits a bit better than  any 1604 but stil doesn`t fit to infrequent spikes
+2303 vs 1608 : again. none of them really fit
 
-1           0.05    53      1           0.005       36     0.1955   1804    FUTURE　(same as 1208, new split)  10-2 
-1           0.05    53      1           0.022       36     0.2565   1606    ALL　(same as 1208 but new split)  
-
+1           0.05    53      1           0.005       36     0.3680   1808    FUTURE　　　 0.5038
+1           0.05    53      1           0.001       32     0.6043   2302    FUTURE　　　 0.6043     for 400 epochs
+1           0.05    53      1           0.022       36     0.2314   1807    ALL　        0.2373
+1           0.05    53      1           0.001       32     0.2433   2301    ALL　        0.2593     for 400 epochs
+2302 vs 1808 whereas 2302 mamanges to fit the infrequent neuron, 1808 fits better to the other spikes
+2301 vs 1807 : not much different. I would use 2301 as it converged slower 
 
 
 >　how is performance with timestamp data ?
-(for iterative prediction)
+(for iterative prediction)[]
 1/5         0.05    53      1                                              FUTURE   1708    used best val loss . change to last. redundant
-1/5         0.05    53      1          	0.00181 	48      0.4766   1803  FUTURE   1711    
-1/5         0.05    53      1           0.01        36      0.3411   1709  FUTURE     -     
-1/5         0.05    53      1           0.01        48               1802  ALL   
+1/5         0.05    53      1          	0.00181 	48      0.4054   1907  FUTURE   1711    0.5295 both overfit  < best
+1/5         0.05    53      1           0.01        36      0.3449   1903  FUTURE     -     0.4625
 
+1/5         0.05    53      1           0.01        48      0.6338   1810  ALL              0.2461
+1/5         0.05    53      1           0.02        36      0.2342   1811  ALL              0.2348 < best
+1/5         0.05    53      1           0.022       36      0.2330   2209                   0.2407         1807 settings
 
 python forecast.py --size 36 --epochs 200 --gpus 1 --initial_lr 0.022 --dataset neuronlaser --future 2 --seq_len 32 --binwidth 0.05
 
 Comparisons
 
 FUTURE      LOSS        INCREMENTAL         ID
-5           ALL         -                   1607 <
-5           FUTURE      -                   1604 <
-1           ALL         -                   1606 <
-1           FUTURE      -                   1804 <
-5           ALL         +                   1803 <
-5           FUTURE      +                   1802
-
+5           ALL         -                   2206
+5           FUTURE      -                   2205
+1           ALL         -                   1807
+1           FUTURE      -                   1808
+5           ALL         +                   1811
+5           FUTURE      +                   1907
 
