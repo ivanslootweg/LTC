@@ -237,7 +237,7 @@ class NeuronData:
         after stack (after make sequences):  (seq_len,N_sequences,T,Neurons)
         """
         if binwidth == 0.05:
-            x = np.load("data/neurons/activations_f0.050000_w0.075000_n17_s5.npy")
+            x = np.load("data/neurons/activations_ADL1_2023-10-24_22-40-25.npy")
         elif binwidth == 0.5:
             x = np.load("data/neurons/activations_f0.5_w1.0.npy")
         x = x.astype(np.float32)
@@ -332,8 +332,8 @@ class NeuronLaserData:
         """
     def load_data(self):
         if self.binwidth == 0.05:
-            x = np.load("data/neurons/activations_f0.050000_w0.075000_n17_s5.npy")
-            x2 = np.load("data/neurons/laserpulses_f0.050000_w0.075000_n17.npy")
+            x = np.load("data/neurons/activations_ADL1_2023-10-24_22-40-25.npy")
+            x2 = np.load("data/neurons/laserpulses_ADL1_2023-10-24_22-40-25.npy")
         elif self.binwidth == 0.5:
             x = np.load("data/neurons/activations_f0.5_w1.0.npy")
             x2 = np.load("data/neurons/laserpulses_f0.5_w1.0.npy")
@@ -345,6 +345,7 @@ class NeuronLaserData:
         self.increment = max(int(x.shape[0] / 1000),2)
         self.make_sequences()   
         self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
+        print(x.shape)
 
     def make_sequences(self):
         # cut the data into x and y sequences

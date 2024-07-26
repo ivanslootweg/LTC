@@ -103,7 +103,7 @@ def load_training_data(neuroncount=None,fname=None):
 
     bin_distance = 0.05
     overlap = 0.025
-    sigma  = 7
+    sigma  = 5
     firing_rates = create_spikes(spikes,bin_distance=bin_distance,overlap = overlap,timepoints_flat=timepoints_flat,plot=False,sigma=sigma)
     np.save(f"data/neurons/activations_{fname}.npy",firing_rates)
     pulse_rates = create_spikes(np.expand_dims(laserpulses,0),bin_distance=bin_distance,overlap = overlap,timepoints_flat=timepoints_flat,plot=False,is_pulses=True)
@@ -133,7 +133,7 @@ def create_realtime_spikes(spikes,bin_distance = None,timepoints_flat=None,bin_w
 
 
 def create_realtime_bins(neuroncount=None,fname=None):
-    print("start binning")
+    # print("start binning")
     N_NEURONS = {"ADL1_2023-10-24_22-40-25" : 17,
                  "ADL1_2023-07-31_00-09-22" : 20
                  }
@@ -155,7 +155,7 @@ def create_realtime_bins(neuroncount=None,fname=None):
     firing_rates = create_realtime_spikes(spikes,bin_distance=bin_distance,overlap = overlap,timepoints_flat=timepoints_flat,sigma=sigma)
     np.save(f"recordings/{fname}/activations.npy",firing_rates)
     # print("done with bins", firing_rates.shape,firing_rates[0][:-15])
-    print("done binning")
+    # print("done binning")
 
 
 if __name__ == "__main__":
@@ -166,9 +166,9 @@ if __name__ == "__main__":
     load_training_data(args.neuroncount,args.fname)
     
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--fname',default="ADL1_2023-10-24_22-40-25")
-    parser.add_argument('--neuroncount',default=None,type=int)
-    args = parser.parse_args()
-    create_realtime_bins(args.neuroncount,args.fname)
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('--fname',default="ADL1_2023-10-24_22-40-25")
+    # parser.add_argument('--neuroncount',default=None,type=int)
+    # args = parser.parse_args()
+    # create_realtime_bins(args.neuroncount,args.fname)
     

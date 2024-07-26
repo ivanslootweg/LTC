@@ -14,7 +14,7 @@ def create_dummy_data(recording_id="dummy"):
     sample_length = 32
     frates = {k : 1-np.abs(random.uniform(-0.2,0.8))  for k in range(n_neurons)}
     fake_spikes = list(map(lambda neuron : [random.uniform(0,sample_length) for i in range(int(frates[neuron] * sample_length))], range(n_neurons)))
-    time.sleep(20)
+    time.sleep(10)
     # print("start creating dummy data")
     if not os.path.exists(f"recordings/{recording_id}"):
         os.makedirs(f"recordings/{recording_id}")
@@ -25,12 +25,12 @@ def create_dummy_data(recording_id="dummy"):
         mat_contents["SessionData"]["CellData"] = fake_spikes
         # scipy.io.savemat(f"recordings/{recording_id}/activations2.mat",mdict=mat_contents)
         # saved_mat_contents = scipy.io.loadmat(f"recordings/{recording_id}/activations2.mat",struct_as_record=False, squeeze_me=True)
-        print("saving .mat..")
+        # print("saving .mat..")
         scipy.io.savemat(f"recordings/{recording_id}/activations_temp.mat",mdict=mat_contents)
-        print("saved .mat..")
+        # print("saved .mat..")
         shutil.copy(f"recordings/{recording_id}/activations_temp.mat",f"recordings/{recording_id}/activations.mat")
-        print("renamed")
-        time.sleep(100)
+        # print("renamed")
+        time.sleep(1)
 
 
 
