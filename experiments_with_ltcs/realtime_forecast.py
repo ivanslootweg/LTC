@@ -38,6 +38,8 @@ plt.rcParams.update({
 
 multiprocessing.set_start_method('spawn', force=True)
 
+global plot_listener
+global lines
 
 class PauseDataHandler(FileSystemEventHandler):
     def __init__(self,recording_id,prepare_realtime_data):
@@ -207,25 +209,27 @@ class RealtimeForecastModel(ForecastModel):
         # self.fig,self.axes = plt.subplots(int(self.out_features/2), 2, figsize=(30,10*self.out_features),constrained_layout=True)
         # self.axes = self.axes.ravel()
 
-        # lines = []
+        # self.lines = []
         # for feat_nr, ax in enumerate(self.axes):
         #     ax.set_ylim(-0.1,None) 
         #     ax.set_xlim(0,64)
         #     line_pos, = ax.plot([], [], lw=0.5, label="With activation",linestyle= '--',alpha = 0.5)
         #     line_neg, = ax.plot([], [], lw=0.5, label="No activation",linestyle= '--',alpha = 0.5)
         #     line_rec, = ax.plot([], [], lw=0.5, label="Recording",alpha = 0.5)
-        #     lines.append((line_pos, line_neg, line_rec))
+        #     self.lines.append((line_pos, line_neg, line_rec))
         #     ax.legend(loc='upper right')
 
         # self.ani = FuncAnimation(self.fig, self.update_plot, interval=500,save_count=20) #run in main thread
+        # plt.show()
 
-    def run(self,recording_id,gpus,pipe_connection):  
+    def run(self,recording_id,gpus,pipe_connection,plot_sender):  
         try:    
             self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
         except: 
             self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
         self.learn.eval()
         self.pipe_connection = pipe_connection
+        self.plot_sender = plot_sender
         self.recording_id = recording_id
 
         self.predict()
@@ -298,7 +302,7 @@ class RealtimeForecastModel(ForecastModel):
                 y_hat_neg[:,i] = next_step_neg[-1:,:]
                 x_pos = torch.cat((x_pos[:,1:],next_step_pos[-1:,:].unsqueeze(0)),dim=1)
                 x_neg = torch.cat((x_neg[:,1:],next_step_neg[-1:,:].unsqueeze(0)),dim=1) 
-            """TODO Now we compare the pos (stimulation) predictioWns and neg (absence) predictions"""
+            """TODO Now we compare the pos (stimulation) predictions and neg (absence) predictions"""
             """Now we plot the recorded history of the signal followed by the forecasts
                     for every neuron + activation
                     make sure to include the laseractivation feature in the predictions
@@ -312,36 +316,46 @@ class RealtimeForecastModel(ForecastModel):
             self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_pos_de), dim= 0) 
             self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_neg_de), dim= 0) 
             print("records so far: ", self.recorded_history.shape, self.predict_pos_history.shape,self.predict_neg_history.shape,flush=True)
-            continue
+            plot_length = min(100, self.total_read_timesteps)
+            self.plot_sender.send((plot_length,
+                    self.predict_pos_history[-(plot_length+self.n_forecasts):],self.predict_neg_history[-(plot_length+self.n_forecasts):], 
+                    self.recorded_history[-plot_length:]))
+            # self.update_plot()
+            # plt.draw()
 
-def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,args):
+def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,plot_sender,args):
     dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
     dataset_data.pipe_connection = child_connection
     model = RealtimeForecastModel(model_id = model_id,model_type=model_type,mixed_memory=mixed_memory,_data=dataset_data,model_size=args.size,task=task)
-    model.run(recording_id,gpus=args.gpus[0],pipe_connection = parent_connection)
+    model.run(recording_id,gpus=args.gpus[0],pipe_connection = parent_connection,plot_sender = plot_sender)
 
-def prepare_plot(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,args):
-    dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
-    dataset_data.pipe_connection = child_connection
-    model = RealtimeForecastModel(model_id = model_id,model_type=model_type,mixed_memory=mixed_memory,_data=dataset_data,model_size=args.size,task=task)
+
+def main_update_plot(plot_listener,fig,axes,lines):
+    if not plot_listener.poll():
+        return (fig,axes,lines)
+    else:
+        print(True)
+    plot_length,  predict_pos_history,predict_neg_history , recorded_history = plot_listener.recv()
+    if plot_length == 0:
+        return (fig,axes,lines)  # No data to plot yet
+
+    plot_pos = predict_pos_history.numpy()
+    plot_neg = predict_neg_history.numpy()
+    history = recorded_history.numpy()
+    print("plotting now: ", history.shape, plot_pos.shape,plot_neg.shape,flush=True)
+    for i, (line_pos, line_neg, line_rec) in enumerate(lines):
+        line_pos.set_data(range(plot_pos.shape[0]), plot_pos[:, i])
+        line_neg.set_data(range(plot_neg.shape[0]), plot_neg[:, i])
+        line_rec.set_data(range(history.shape[0]), history[:, i])
+        axes[i].relim()
     
-
-    fig,axes = plt.subplots(int(dataset_data.out_features/2), 2, figsize=(30,10*dataset_data.out_features),constrained_layout=True)
-    axes = axes.ravel()
-
-    lines = []
-    for feat_nr, ax in enumerate(self.axes):
-        ax.set_ylim(-0.1,None) 
-        ax.set_xlim(0,64)
-        line_pos, = ax.plot([], [], lw=0.5, label="With activation")
-        line_neg, = ax.plot([], [], lw=0.5, label="No activation")
-        line_rec, = ax.plot([], [], lw=0.5, label="Recording")
-        lines.append((line_pos, line_neg, line_rec))
-        ax.legend(loc='upper right')
-
-    ani = FuncAnimation(fig, update_plot, interval=1000,save_count=20) #run in main thread
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+    # plt.show(ti)
+    return (fig,axes,lines)
 
 if __name__ == "__main__":
+    # https://www.geeksforgeeks.org/dynamically-updating-plot-in-matplotlib/
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_id',default =0, type= int)
     parser.add_argument('--model',default="ltc")
@@ -373,6 +387,23 @@ if __name__ == "__main__":
     dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
     dataset_data.pipe_connection = child_connection
 
+    plot_listener, plot_sender = Pipe()
+
+    fig,axes = plt.subplots(int(dataset_data.out_features/2), 2, figsize=(30,10*dataset_data.out_features),constrained_layout=True)
+    axes = axes.ravel()
+
+    lines = []
+    for feat_nr, ax in enumerate(axes):
+        ax.set_ylim(-0.1,None) 
+        ax.set_xlim(0,64)
+        line_pos, = ax.plot([], [], lw=0.5, label="With activation")
+        line_neg, = ax.plot([], [], lw=0.5, label="No activation")
+        line_rec, = ax.plot([], [], lw=0.5, label="Recording")
+        lines.append((line_pos, line_neg, line_rec))
+        ax.legend(loc='upper right')
+
+    print("prepared plot")
+
     processes = [] 
     data_observer = Observer()
 
@@ -393,21 +424,18 @@ if __name__ == "__main__":
     dummy_data_process.start()
     processes.append(dummy_data_process)
 
-    
-    predict_process = multiprocessing.Process(target=run,args=(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,args))    
+    predict_process = multiprocessing.Process(target=run,args=(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,plot_sender,args))    
     predict_process.start()
     processes.append(predict_process)
-
-    # run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,args)
 
 
 
     try:
-        # plt.show()
         while True:
-            pass
+            plt.show()
+            fig,ax, lines = main_update_plot(plot_listener,fig,axes,lines)
     except KeyboardInterrupt:
-        # plt.close('all')
+        plt.close('all')
         data_observer.stop()
         data_observer.join()
         for process in processes:
