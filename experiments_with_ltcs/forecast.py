@@ -76,7 +76,6 @@ class DataBaseClass:
         self.in_features = self.train_x.shape[2]
         self.out_features = self.train_y.shape[2]
 
-    @classmethod
     def get_dataloader(self,subset="train"):
         """ We create dataloader with content of shapes [batch size,series_length,features]
         permute x and y data because [series_length, n_series, features]
@@ -99,7 +98,6 @@ class DataBaseClass:
             num_workers = 1 if subset == "test_plot" else 4,
         )
 
-    @classmethod
     def normalize(self, tensor,values="x"):
         tensor = torch.tensor(tensor)
         if not hasattr(self,"std") or not hasattr(self,"mean"):

@@ -8,8 +8,7 @@ import traceback
 import time
 import contextlib
 import multiprocessing
-from multiprocessing import Pipe, Manager
-from multiprocessing.managers import BaseManager, NamespaceProxy
+from multiprocessing import Pipe
 
 from forecast import ForecastModel
 from forecast import NeuronLaserData,  DataBaseClass
@@ -41,17 +40,17 @@ multiprocessing.set_start_method('spawn', force=True)
 
 
 class PauseDataHandler(FileSystemEventHandler):
-    def __init__(self,recording_id,load_func):
+    def __init__(self,recording_id,prepare_realtime_data):
         self.recording_id = recording_id
         self.raw_data = f"recordings/{recording_id}/activations.mat"
         self.neuron_data = f"recordings/{recording_id}/activations.npy"
-        self.load_realtime_data = load_func
+        self.prepare_realtime_data = prepare_realtime_data
         self.last_called = None
         self.cooldown = 0.5
         self.include_from = 0
 
     def on_created(self, event):
-        print("created",flush=True  )
+        # print("created",flush=True  )
 
         pass
 
@@ -59,15 +58,15 @@ class PauseDataHandler(FileSystemEventHandler):
         if event.src_path.endswith(self.raw_data):
             with self.ignore_events() as can_enter:
                 if can_enter:
-                    print("modified",flush=True)
+                    # print("modified",flush=True)
                     self.handle_raw_data()
         return
 
     def handle_raw_data(self):
         try:
-            print("creating bins",flush=True)
+            # print("creating bins",flush=True)
             self.include_from = create_realtime_bins(neuroncount=20,fname=self.recording_id,include_from =self.include_from)
-            self.load_realtime_data(self.neuron_data)
+            self.prepare_realtime_data(self.neuron_data)
 
         except Exception as e:
             print(f"Error handling file raw data: {e}")    
@@ -84,11 +83,11 @@ class PauseDataHandler(FileSystemEventHandler):
 
 
 class DataHandler(FileSystemEventHandler):
-    def __init__(self,recording_id,load_func):
+    def __init__(self,recording_id,prepare_realtime_data):
         self.recording_id = recording_id
         self.raw_data = f"recordings/{recording_id}/activations.mat"
         self.neuron_data = f"recordings/{recording_id}/activations.npy"
-        self.load_realtime_data = load_func
+        self.prepare_realtime_data = prepare_realtime_data
         self.last_called = None
         self.cooldown = 0.5
         self.include_from = 0
@@ -97,7 +96,7 @@ class DataHandler(FileSystemEventHandler):
         if event.src_path.endswith(self.raw_data):
             current_time = time.time()
             if self.last_called is None or (current_time - self.last_called) > self.cooldown:
-                print("created",flush=True)
+                # print("created",flush=True)
                 self.last_called = current_time
                 self.handle_raw_data()
 
@@ -105,7 +104,7 @@ class DataHandler(FileSystemEventHandler):
         if event.src_path.endswith(self.raw_data):
             current_time = time.time()
             if self.last_called is None or (current_time - self.last_called) > self.cooldown:
-                print("modified",flush=True)
+                # print("modified",flush=True)
                 self.last_called = current_time
                 self.handle_raw_data()
             return
@@ -113,9 +112,8 @@ class DataHandler(FileSystemEventHandler):
 
     def handle_raw_data(self):
         try:
-            print("creating bins",flush=True)
             self.include_from = create_realtime_bins(neuroncount=20,fname=self.recording_id,include_from =self.include_from)
-            self.load_realtime_data(self.neuron_data)
+            self.prepare_realtime_data(self.neuron_data)
             return
         except Exception as e:
             print(f"Error handling file raw data: {e}")    
@@ -126,7 +124,7 @@ class PredictHandler(FileSystemEventHandler):
         self.recording_id = recording_id
         self.predict = predict_func
         self.lock = threading.Lock()
-        self.load_realtime_data = load_func
+        self.prepare_realtime_data = load_func
 
     def on_created(self, event):
         pass
@@ -168,24 +166,12 @@ class PlotHandler(FileSystemEventHandler):
             traceback.print_exc()
     
 class RealtimeNeuronLaserData(NeuronLaserData):
-    def __init__(self,pipe_connection,**kwargs):
+    def __init__(self,**kwargs):
         super().__init__(**kwargs)
         # self.data_condition = threading.Condition()
-        self.pipe_connection = pipe_connection
+        self.pipe_connection = None
 
-    def create(cls, *args, **kwargs):
-        class_str = "RealtimeNeuronLaserData"
-        BaseManager.register(class_str, cls, ObjProxy, exposed=tuple(dir(cls)))
-
-        # Start a manager process
-        manager = BaseManager()
-        manager.start()
-
-        # Create and return this proxy instance. Using this proxy allows sharing of state between processes.
-        inst = eval("manager.{}(*args, **kwargs)".format(class_str))
-        return inst
-
-    def load_realtime_data(self,_path):
+    def prepare_realtime_data(self,_path):
         x = np.load(_path)
         x = x.astype(np.float32)
         x = np.transpose(x)
@@ -196,10 +182,10 @@ class RealtimeNeuronLaserData(NeuronLaserData):
         #     self.data_condition.notify_all()
         #     return
 
-        setattr(self,f"predict_x",x)   
-        t = time.time()
-        print(f"send {t}",flush=True)
-        self.pipe_connection.send(t)
+        setattr(self,"predict_x",x)   
+        # print("sending ",flush=True)
+        in_x, in_x_de = self.get_dataloader(subset="predict")
+        self.pipe_connection.send((in_x, in_x_de))
     
     def set_pipe(pipe_connection):
         self.pipe_connection = pipe_connection
@@ -210,28 +196,28 @@ class RealtimeForecastModel(ForecastModel):
         self.set_model()
         self.total_read_timesteps = 0
         self.trainer = pl.Trainer()
-        self.load_realtime = kwargs["_data"].load_realtime_data
+        self.prepare_realtime_data = kwargs["_data"].prepare_realtime_data
         self.norm_recorded_history = torch.empty((1,0,self.in_features-1),dtype=torch.float32)
         self.recorded_history = torch.empty((0,self.in_features-1),dtype=torch.float32)
         self.predict_pos_history = torch.full((self.n_forecasts,self.in_features-1),0)
         self.predict_neg_history = torch.full((self.n_forecasts,self.in_features-1),0)
         # self.data_condition = kwargs["_data"].data_condition
 
-        # self.fig, self.axes = plt.subplots(int(self.out_features/2), 2, figsize=(30,10*self.out_features),constrained_layout=True)
+
+        # self.fig,self.axes = plt.subplots(int(self.out_features/2), 2, figsize=(30,10*self.out_features),constrained_layout=True)
         # self.axes = self.axes.ravel()
 
-        # self.lines = []
+        # lines = []
         # for feat_nr, ax in enumerate(self.axes):
         #     ax.set_ylim(-0.1,None) 
         #     ax.set_xlim(0,64)
-        #     line_pos, = ax.plot([], [], lw=0.5, label="With activation")
-        #     line_neg, = ax.plot([], [], lw=0.5, label="No activation")
-        #     line_rec, = ax.plot([], [], lw=0.5, label="Recording")
-        #     self.lines.append((line_pos, line_neg, line_rec))
+        #     line_pos, = ax.plot([], [], lw=0.5, label="With activation",linestyle= '--',alpha = 0.5)
+        #     line_neg, = ax.plot([], [], lw=0.5, label="No activation",linestyle= '--',alpha = 0.5)
+        #     line_rec, = ax.plot([], [], lw=0.5, label="Recording",alpha = 0.5)
+        #     lines.append((line_pos, line_neg, line_rec))
         #     ax.legend(loc='upper right')
 
-        # self.ani = FuncAnimation(self.fig, self.update_plot, interval=1000) #run in main thread
-
+        # self.ani = FuncAnimation(self.fig, self.update_plot, interval=500,save_count=20) #run in main thread
 
     def run(self,recording_id,gpus,pipe_connection):  
         try:    
@@ -246,7 +232,8 @@ class RealtimeForecastModel(ForecastModel):
 
 
     def update_plot(self, *args):
-        plot_length = min(64, self.total_read_timesteps)
+        print("updating")
+        plot_length = min(100, self.total_read_timesteps)
         if plot_length == 0:
             return self.lines  # No data to plot yet
 
@@ -274,21 +261,25 @@ class RealtimeForecastModel(ForecastModel):
             #     self.data_condition.wait()
             if  not self.pipe_connection.poll():
                 continue
-            _ = self.pipe_connection.recv()
-            print(f"read {_}")
-            in_x, in_x_de = self._loaderfunc(subset="predict")
+            in_x, in_x_de = self.pipe_connection.recv()
+            # print(f"read {_}")
+            # in_x, in_x_de = self._loaderfunc(subset="predict")
             # print("incoming: ",in_x.shape,flush=True)
             in_x = in_x.to(self.device,non_blocking=True) # shape of (seq_len,1,neurons) > (1,seq_len,neurons) 
-            print("incoming: ",in_x.shape,flush=True)
+            # print("incoming: ",in_x.shape,flush=True)
             # new_read_timesteps = in_x.shape[1] - self.total_read_timesteps
             new_read_timesteps = in_x.shape[1]
-            missed_predictions = max(0,new_read_timesteps - self.n_forecasts)
             self.total_read_timesteps += new_read_timesteps
             self.norm_recorded_history = torch.concat((self.norm_recorded_history,in_x), dim= 1) 
-            
+            self.recorded_history = torch.concat((self.recorded_history,torch.tensor(in_x_de[-new_read_timesteps:])), dim= 0) 
+
             if self.total_read_timesteps < self.seq_len:
-                print("too small",in_x.shape,flush=True)
+                print("too small",self.norm_recorded_history.shape,flush=True)
+                self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((new_read_timesteps,self.in_features-1),0)), dim= 0) 
+                self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((new_read_timesteps,self.in_features-1),0)), dim= 0) 
                 continue
+
+            missed_predictions = max(0,new_read_timesteps - self.n_forecasts)
             # in_x = in_x[:,-self.seq_len:,:] #fetch last 32 timestamps
             in_x = self.norm_recorded_history[:,-self.seq_len:,:]
             x_pos = x_neg = in_x # (1,seq_len,neurons)
@@ -318,33 +309,37 @@ class RealtimeForecastModel(ForecastModel):
         
             # self.y_hat_pos_de = y_hat_pos_de
             # self.y_hat_neg_de = y_hat_neg_de
-            self.recorded_history = torch.concat((self.recorded_history,torch.tensor(in_x_de[-new_read_timesteps:])), dim= 0) 
             self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_pos_de), dim= 0) 
             self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_neg_de), dim= 0) 
             print("records so far: ", self.recorded_history.shape, self.predict_pos_history.shape,self.predict_neg_history.shape,flush=True)
             continue
 
-def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,inst,args):
-    # dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
-    # dataset_data.pipe_connection = child_connection
-    print(inst.pipe_connection)
-    model = RealtimeForecastModel(model_id = model_id,model_type=model_type,mixed_memory=mixed_memory,_data=inst,model_size=args.size,task=task)
+def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,args):
+    dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
+    dataset_data.pipe_connection = child_connection
+    model = RealtimeForecastModel(model_id = model_id,model_type=model_type,mixed_memory=mixed_memory,_data=dataset_data,model_size=args.size,task=task)
     model.run(recording_id,gpus=args.gpus[0],pipe_connection = parent_connection)
 
+def prepare_plot(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,args):
+    dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
+    dataset_data.pipe_connection = child_connection
+    model = RealtimeForecastModel(model_id = model_id,model_type=model_type,mixed_memory=mixed_memory,_data=dataset_data,model_size=args.size,task=task)
+    
 
-class ObjProxy(NamespaceProxy):
-    """Returns a proxy instance for any user defined data-type. The proxy instance will have the namespace and
-    functions of the data-type (except private/protected callables/attributes). Furthermore, the proxy will be
-    pickable and can its state can be shared among different processes. """
+    fig,axes = plt.subplots(int(dataset_data.out_features/2), 2, figsize=(30,10*dataset_data.out_features),constrained_layout=True)
+    axes = axes.ravel()
 
-    def __getattr__(self, name):
-        result = super().__getattr__(name)
-        if isinstance(result, types.MethodType):
-            def wrapper(*args, **kwargs):
-                return self._callmethod(name, args, kwargs)
-            return wrapper
-        return result
+    lines = []
+    for feat_nr, ax in enumerate(self.axes):
+        ax.set_ylim(-0.1,None) 
+        ax.set_xlim(0,64)
+        line_pos, = ax.plot([], [], lw=0.5, label="With activation")
+        line_neg, = ax.plot([], [], lw=0.5, label="No activation")
+        line_rec, = ax.plot([], [], lw=0.5, label="Recording")
+        lines.append((line_pos, line_neg, line_rec))
+        ax.legend(loc='upper right')
 
+    ani = FuncAnimation(fig, update_plot, interval=1000,save_count=20) #run in main thread
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -366,28 +361,23 @@ if __name__ == "__main__":
        
     assert args.future > 0 , "Future should be > 0"
     # some_data_class = get_database_class(RealtimeNeuronLaserData)
-    # dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
-
     
     model_id = args.model_id
     recording_id = "dummy"
     print(f" --------- model id: {model_id} recording id : {recording_id}--------- ")
     # Run the main model's run method
 
+
+
     parent_connection, child_connection = Pipe()
-    # dataset_data.pipe_connection = child_connection
+    dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
+    dataset_data.pipe_connection = child_connection
 
-
-    # BaseManager.register('RealtimeNeuronLaserData', RealtimeNeuronLaserData)
-    # manager = BaseManager()
-    # manager.start()
-    inst= RealtimeNeuronLaserData.create(child_connection,future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
-
-    processes = []
+    processes = [] 
     data_observer = Observer()
 
     data_observer.daemon = True 
-    data_handler = PauseDataHandler(recording_id,inst.load_realtime_data)
+    data_handler = PauseDataHandler(recording_id,dataset_data.prepare_realtime_data)
     data_observer.schedule(data_handler, path=f"recordings/{recording_id}", recursive=False)   
     data_observer.start()
 
@@ -403,9 +393,13 @@ if __name__ == "__main__":
     dummy_data_process.start()
     processes.append(dummy_data_process)
 
-    predict_process = multiprocessing.Process(target=run,args=(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,inst,args))    
+    
+    predict_process = multiprocessing.Process(target=run,args=(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,args))    
     predict_process.start()
     processes.append(predict_process)
+
+    # run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,args)
+
 
 
     try:
