@@ -144,15 +144,16 @@ def create_realtime_bins(neuroncount=None,fname=None):
     # remove trailing timeseries
     raw_timepoints_flat = np.array([])
     for i in range(len(raw_spikes)):
-        raw_timepoints_flat = np.append(raw_timepoints_flat, raw_spikes[i].flatten())
+        raw_timepoints_flat = np.append(raw_timepoints_flat, [raw_spikes[i]])
     timepoints_flat = raw_timepoints_flat - min(raw_timepoints_flat)
     spikes = np.array(list(map(lambda x: x - min(raw_timepoints_flat), raw_spikes)), dtype=object)
+    print([spikes[i] for i in range(spikes.shape[0])],flush=True)
     T = max(timepoints_flat)
-
     bin_distance = 0.05
     overlap = 0.025
     sigma  = 5
     firing_rates = create_realtime_spikes(spikes,bin_distance=bin_distance,overlap = overlap,timepoints_flat=timepoints_flat,sigma=sigma)
+    print(f"spikes max {T}, total bins: {firing_rates.shape}",flush=True)
     np.save(f"recordings/{fname}/activations.npy",firing_rates)
     # print("done with bins", firing_rates.shape,firing_rates[0][:-15])
     # print("done binning")

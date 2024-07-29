@@ -57,6 +57,68 @@ class MSELossfuture(nn.Module):
         loss = self.loss(inputs[:,-self.n_future:] ,targets[:,-self.n_future:])
         return loss
 
+class DataBaseClass:
+    def __init__(self):
+        self.load_data()
+        dataset_names = ["train_x","train_y","valid_x", "valid_y","test_x","test_y","test_plot_x","test_plot_y"]
+        train_with_noise = False
+        for _name in dataset_names:
+            _array = getattr(self,_name)
+            print(f"{_name} shape: ", str(_array.shape))
+            _array = self.normalize(_array,_name.split("_")[-1])
+            print(f"{_name} shape: ", str(_array.shape),f"{_name} post normalisation: ",_array.mean())
+            if "train" in _name and train_with_noise:
+                noise = np.random.normal(0, 0.1, _array.shape) 
+                _array = _array + noise
+                setattr(self,_name, _array)
+                print(f"{_name} post noise: ",str(_array.mean()))              
+
+        self.in_features = self.train_x.shape[2]
+        self.out_features = self.train_y.shape[2]
+
+    @classmethod
+    def get_dataloader(self,subset="train"):
+        """ We create dataloader with content of shapes [batch size,series_length,features]
+        permute x and y data because [series_length, n_series, features]
+        """
+
+        # the predict dataset is for now made from the test chunk and we use it to make plots
+        #　for now the predict dataset only exists for neuron data 
+        if subset == "predict":
+            """expect x and y to be in format (seq_len,1,neurons) for normalisation"""
+            # self.load_realtime_data()
+            return self.normalize(np.expand_dims(self.predict_x,0),"x"), self.predict_x 
+        
+        assert (subset) in ["train","valid","test","test_plot"]
+        x_data = torch.permute(torch.tensor(getattr(self,f"{subset}_x")),(1,0,2)) # _batch = (B_size, Timesteps, Features)
+        y_data = torch.permute(torch.tensor(getattr(self,f"{subset}_y")),(1,0,2))
+        return data.DataLoader(
+            data.TensorDataset(x_data, y_data),
+            batch_size =  self.n_forecasts if subset == "test_plot" and self.iterative_forecast else self.batch_size,
+            shuffle=True if subset == "train" else False,
+            num_workers = 1 if subset == "test_plot" else 4,
+        )
+
+    @classmethod
+    def normalize(self, tensor,values="x"):
+        tensor = torch.tensor(tensor)
+        if not hasattr(self,"std") or not hasattr(self,"mean"):
+            self.mean = {}
+            self.std = {}
+        if not values in self.mean or not values in self.std:
+            self.mean[values] = torch.mean(tensor, dim=(0, 1), keepdim=True)
+            self.std[values] = torch.std(tensor, dim=(0, 1), keepdim=True)
+            res = self.std[values].clone()
+            res[self.std[values]==0] = torch.tensor(1)
+            self.std[values] = res
+            del res
+        return (tensor - self.mean[values][...,:tensor.shape[-1]]) / self.std[values][...,:tensor.shape[-1]]
+
+    @classmethod    
+    def denormalize(self,tensor,values="x"):
+        return tensor * self.std[values][...,:tensor.shape[-1]] + self.mean[values][...,:tensor.shape[-1]]
+
+
 
 def load_trace():
     df = pd.read_csv("data/traffic/Metro_Interstate_Traffic_Volume.csv")
@@ -96,7 +158,7 @@ def cut_in_sequences(x,seq_len,inc=1,prognosis=1):
         # sequences_y.append(x[end:end+prognosis])
     return sequences_x,sequences_y
 
-class TrafficData:
+class TrafficData(DataBaseClass):
     def __init__(self,seq_len=32,future=1,batch_size=16):
         x, y = load_trace()
 
@@ -127,8 +189,8 @@ class TrafficData:
         self.train_y = self.train_y[:,permutation[valid_size + test_size :]]
 
         self.feature_labels = ['Holiday','Temperature','Rain','Snow','Clouds','Weekday','Noon']
-
-class OccupancyData:
+        super().__init__()
+class OccupancyData(DataBaseClass):
     def __init__(self,seq_len=32,future=1,batch_size=16):
 
         self.seq_len = seq_len
@@ -173,6 +235,7 @@ class OccupancyData:
         self.test_x = np.concatenate([test0_x,test1_x],axis=1)
         self.test_y = np.concatenate([test0_y,test1_y],axis=1)
         self.feature_labels = ['Temperature', 'Humidity','Light','CO2','HumidityRatio']
+        super().__init__()
 
     def read_file(self,filename):
         df = pd.read_csv(filename)                                    
@@ -187,7 +250,7 @@ class OccupancyData:
         data_y = df['Occupancy'].values.astype(np.int32)
         return data_x,data_y
             
-class CheetahData:
+class CheetahData(DataBaseClass):
     def __init__(self,seq_len=32,future=1,batch_size=16):
         all_files = sorted([os.path.join("data/cheetah",d) for d in os.listdir("data/cheetah") if d.endswith(".npy")])
 
@@ -204,6 +267,7 @@ class CheetahData:
         self.test_x, self.test_y = self._load_files(test_files)
         self.valid_x, self.valid_y = self._load_files(valid_files)
         self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
+        super().__init__()
 
     def _load_files(self,files):
         all_x = []
@@ -219,8 +283,7 @@ class CheetahData:
 
         return np.stack(all_x,axis=1),np.stack(all_y,axis=1)
 
-
-class NeuronData:
+class NeuronData(DataBaseClass):
     def __init__(self,binwidth=0.05,seq_len=32,future=1,iterative_forecast=False,batch_size=16):
 
         self.seq_len = seq_len
@@ -248,6 +311,7 @@ class NeuronData:
         self.increment = max(int(x.shape[0] / 1000),2)
         self.make_sequences()         
         self.feature_labels = self.feature_labels = [f"neuron {i}" for i in range(self.train_y.shape[2])]
+        super().__init__()
 
     def make_sequences(self):
         # cut the data into x and y sequences
@@ -311,8 +375,7 @@ class NeuronData:
 
         return (val_data, test_data,train_data)  
 
-    
-class NeuronLaserData:
+class NeuronLaserData(DataBaseClass):
     def __init__(self,binwidth=0.05,seq_len=32,future=1,iterative_forecast=False,batch_size=16):
         self.seq_len = seq_len
         self.batch_size = batch_size
@@ -330,6 +393,8 @@ class NeuronLaserData:
         after stack:  (seq_len,N_sequences,T,Neurons)
         after stack (after make sequences):  (seq_len,N_sequences,T,Neurons)
         """
+        super().__init__()
+
     def load_data(self):
         if self.binwidth == 0.05:
             x = np.load("data/neurons/activations_ADL1_2023-10-24_22-40-25.npy")
@@ -345,7 +410,6 @@ class NeuronLaserData:
         self.increment = max(int(x.shape[0] / 1000),2)
         self.make_sequences()   
         self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
-        print(x.shape)
 
     def make_sequences(self):
         # cut the data into x and y sequences
@@ -411,68 +475,6 @@ class NeuronLaserData:
         return (val_data, test_data,train_data)  
     
 
-def get_database_class(data_base):
-    class DataBaseClass(data_base):
-        def __init__(self,**kwargs):
-            super().__init__(**kwargs)
-            self.load_data()
-            dataset_names = ["train_x","train_y","valid_x", "valid_y","test_x","test_y","test_plot_x","test_plot_y"]
-            train_with_noise = False
-            for _name in dataset_names:
-                _array = getattr(self,_name)
-                print(f"{_name} shape: ", str(_array.shape))
-                _array = self.normalize(_array,_name.split("_")[-1])
-                print(f"{_name} shape: ", str(_array.shape),f"{_name} post normalisation: ",_array.mean())
-                if "train" in _name and train_with_noise:
-                    noise = np.random.normal(0, 0.1, _array.shape) 
-                    _array = _array + noise
-                    setattr(self,_name, _array)
-                    print(f"{_name} post noise: ",str(_array.mean()))              
-
-            self.in_features = self.train_x.shape[2]
-            self.out_features = self.train_y.shape[2]
-
-        def get_dataloader(self,subset="train"):
-            """ We create dataloader with content of shapes [batch size,series_length,features]
-            permute x and y data because [series_length, n_series, features]
-            """
-
-            # the predict dataset is for now made from the test chunk and we use it to make plots
-            #　for now the predict dataset only exists for neuron data 
-            if subset == "predict":
-                """expect x and y to be in format (seq_len,1,neurons) for normalisation"""
-                # self.load_realtime_data()
-                return self.normalize(np.expand_dims(self.predict_x,0),"x"), self.predict_x 
-            
-            assert (subset) in ["train","valid","test","test_plot"]
-            x_data = torch.permute(torch.tensor(getattr(self,f"{subset}_x")),(1,0,2)) # _batch = (B_size, Timesteps, Features)
-            y_data = torch.permute(torch.tensor(getattr(self,f"{subset}_y")),(1,0,2))
-            return data.DataLoader(
-                data.TensorDataset(x_data, y_data),
-                batch_size =  self.n_forecasts if subset == "test_plot" and self.iterative_forecast else self.batch_size,
-                shuffle=True if subset == "train" else False,
-                num_workers = 1 if subset == "test_plot" else 4,
-            )
-
-        def normalize(self, tensor,values="x"):
-            tensor = torch.tensor(tensor)
-            if not hasattr(self,"std") or not hasattr(self,"mean"):
-                self.mean = {}
-                self.std = {}
-            if not values in self.mean or not values in self.std:
-                self.mean[values] = torch.mean(tensor, dim=(0, 1), keepdim=True)
-                self.std[values] = torch.std(tensor, dim=(0, 1), keepdim=True)
-                res = self.std[values].clone()
-                res[self.std[values]==0] = torch.tensor(1)
-                self.std[values] = res
-                del res
-            return (tensor - self.mean[values][...,:tensor.shape[-1]]) / self.std[values][...,:tensor.shape[-1]]
-        
-        def denormalize(self,tensor,values="x"):
-            return tensor * self.std[values][...,:tensor.shape[-1]] + self.mean[values][...,:tensor.shape[-1]]
-        
-    return DataBaseClass
-
 class ForecastModel:    
     def __init__(self,model_id = None,_data=None,task=None,model_size =None,mixed_memory=True,model_type="ltc",checkpoint_id = None):
         self.model_type = model_type
@@ -503,6 +505,7 @@ class ForecastModel:
             # wiring = AutoNCP(model_size,out_features)
             wiring = FullyConnected(self.model_size,self.out_features)
             self._model = LTC(self.in_features,wiring,batch_first=True,mixed_memory=self.mixed_memory)
+
         # lr_logger = LearningRateMonitor(logging_interval='step') # this is a callback
 
     def fit(self,trial=None,_data=None,epochs=100,learning_rate=1e-2,cosine_lr=False,optimise=False,gpus=None,future_loss = False,reset = False):
@@ -764,7 +767,7 @@ if __name__ == "__main__":
 
 
     assert args.future > 0 , "Future should be > 0"
-    some_data_class = get_database_class(data_classes[args.dataset])
+    some_data_class = data_classes[args.dataset]
     dataset_data = some_data_class(future=args.future,seq_len=args.seq_len,binwidth=args.binwidth,iterative_forecast=args.iterative_forecast)
     task = args.dataset + "_forecast"
     checkpoint_id = None
