@@ -57,6 +57,44 @@ class MSELossfuture(nn.Module):
         loss = self.loss(inputs[:,-self.n_future:] ,targets[:,-self.n_future:])
         return loss
 
+def load_trace():
+    df = pd.read_csv("data/traffic/Metro_Interstate_Traffic_Volume.csv")
+    holiday = (df["holiday"].values == None).astype(np.float32)
+    temp = df["temp"].values.astype(np.float32)
+    # temp -= np.mean(temp)  # normalize temp by annual mean
+    rain = df["rain_1h"].values.astype(np.float32)
+    snow = df["snow_1h"].values.astype(np.float32)
+    clouds = df["clouds_all"].values.astype(np.float32)
+    date_time = df["date_time"].values
+    # 2012-10-02 13:00:00
+    date_time = [dt.datetime.strptime(d, "%Y-%m-%d %H:%M:%S") for d in date_time]
+    weekday = np.array([d.weekday() for d in date_time]).astype(np.float32)
+    noon = np.array([d.hour for d in date_time]).astype(np.float32)
+    noon = np.sin(noon * np.pi / 24)
+
+    features = np.stack([holiday, temp, rain, snow, clouds, weekday, noon], axis=-1)
+
+    traffic_volume = df["traffic_volume"].values.astype(np.float32)
+    # traffic_volume -= np.mean(traffic_volume)  # normalize
+    # traffic_volume /= np.std(traffic_volume)  # normalize
+
+    return features, traffic_volume
+
+
+def cut_in_sequences(x,seq_len,inc=1,prognosis=1):
+    sequences_x = []
+    sequences_y = []
+    # x: time series
+    # y: time series shifted into futurew
+    # every x array has an overlap of (seq_len - inc)
+    for s in range(0,x.shape[0] - seq_len-prognosis,inc):
+        start = s
+        end = start+seq_len
+        sequences_x.append(x[start:end])
+        sequences_y.append(x[start+prognosis:end+prognosis])
+        # sequences_y.append(x[end:end+prognosis])
+    return sequences_x,sequences_y
+
 class DataBaseClass:
     def __init__(self):
         self.load_data()
@@ -116,46 +154,6 @@ class DataBaseClass:
     def denormalize(self,tensor,values="x"):
         return tensor * self.std[values][...,:tensor.shape[-1]] + self.mean[values][...,:tensor.shape[-1]]
 
-
-
-def load_trace():
-    df = pd.read_csv("data/traffic/Metro_Interstate_Traffic_Volume.csv")
-    holiday = (df["holiday"].values == None).astype(np.float32)
-    temp = df["temp"].values.astype(np.float32)
-    # temp -= np.mean(temp)  # normalize temp by annual mean
-    rain = df["rain_1h"].values.astype(np.float32)
-    snow = df["snow_1h"].values.astype(np.float32)
-    clouds = df["clouds_all"].values.astype(np.float32)
-    date_time = df["date_time"].values
-    # 2012-10-02 13:00:00
-    date_time = [dt.datetime.strptime(d, "%Y-%m-%d %H:%M:%S") for d in date_time]
-    weekday = np.array([d.weekday() for d in date_time]).astype(np.float32)
-    noon = np.array([d.hour for d in date_time]).astype(np.float32)
-    noon = np.sin(noon * np.pi / 24)
-
-    features = np.stack([holiday, temp, rain, snow, clouds, weekday, noon], axis=-1)
-
-    traffic_volume = df["traffic_volume"].values.astype(np.float32)
-    # traffic_volume -= np.mean(traffic_volume)  # normalize
-    # traffic_volume /= np.std(traffic_volume)  # normalize
-
-    return features, traffic_volume
-
-
-def cut_in_sequences(x,seq_len,inc=1,prognosis=1):
-    sequences_x = []
-    sequences_y = []
-    # x: time series
-    # y: time series shifted into futurew
-    # every x array has an overlap of (seq_len - inc)
-    for s in range(0,x.shape[0] - seq_len-prognosis,inc):
-        start = s
-        end = start+seq_len
-        sequences_x.append(x[start:end])
-        sequences_y.append(x[start+prognosis:end+prognosis])
-        # sequences_y.append(x[end:end+prognosis])
-    return sequences_x,sequences_y
-
 class TrafficData(DataBaseClass):
     def __init__(self,seq_len=32,future=1,batch_size=16):
         x, y = load_trace()
@@ -188,6 +186,7 @@ class TrafficData(DataBaseClass):
 
         self.feature_labels = ['Holiday','Temperature','Rain','Snow','Clouds','Weekday','Noon']
         super().__init__()
+
 class OccupancyData(DataBaseClass):
     def __init__(self,seq_len=32,future=1,batch_size=16):
 
@@ -395,16 +394,19 @@ class NeuronLaserData(DataBaseClass):
 
     def load_data(self):
         if self.binwidth == 0.05:
-            x = np.load("data/neurons/activations_ADL1_2023-10-24_22-40-25.npy")
-            x2 = np.load("data/neurons/laserpulses_ADL1_2023-10-24_22-40-25.npy")
-        elif self.binwidth == 0.5:
-            x = np.load("data/neurons/activations_f0.5_w1.0.npy")
-            x2 = np.load("data/neurons/laserpulses_f0.5_w1.0.npy")
+            # x = np.load("data/neurons/activations_ADL1_2023-10-24_22-40-25.npy")
+            # x2 = np.load("data/neurons/laserpulses_ADL1_2023-10-24_22-40-25.npy")
+            x = np.load("data/neurons/activations_ADL1_2023-07-31_00-09-22.npy")
+            x2 = np.load("data/neurons/laserpulses_ADL1_2023-07-31_00-09-22.npy")
+        # elif self.binwidth == 0.5:
+        #     x = np.load("data/neurons/activations_f0.5_w1.0.npy")
+        #     x2 = np.load("data/neurons/laserpulses_f0.5_w1.0.npy")
         x = np.concatenate([x,x2], 0)
         x = x.astype(np.float32)
         x = np.transpose(x)
         # train val test split
         self.valid_chunk,self.test_chunk, self.train_chunk = self.train_test_split(x)
+        
         self.increment = max(int(x.shape[0] / 1000),2)
         self.make_sequences()   
         self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
@@ -470,9 +472,10 @@ class NeuronLaserData(DataBaseClass):
             x[chunk_indices[chunk_separation]:chunk_indices[chunk_separation+1]],
             x[chunk_indices[-1]:]
         ]
+
+        print(f"val idx: {start_val} - {start_val + val_size} ({val_size}) test idx: {start_test} {start_test + test_size} ({test_size})")
         return (val_data, test_data,train_data)  
     
-
 class ForecastModel:    
     def __init__(self,model_id = None,_data=None,task=None,model_size =None,mixed_memory=True,model_type="ltc",checkpoint_id = None):
         self.model_type = model_type
@@ -543,8 +546,8 @@ class ForecastModel:
                     callbacks=[self.checkpoint_callback],
                 )
 
-                self.learn = SequenceLearner(self._model,loss,learning_rate=learning_rate,cosine_lr=cosine_lr,iterative_forecast=self.iterative_forecast,
-                    _loaderfunc=self._loaderfunc,n_iterations=(self.batch_size * epochs))
+                self.learn = SequenceLearner(model= self._model,loss_func = loss,lr=learning_rate,cosine_lr=cosine_lr,iterative_forecast=self.iterative_forecast,
+                    _loaderfunc=self._loaderfunc,n_iterations=(self.batch_size * epochs),future = self.future,denormalize = self.denormalize)
 
             else:
                 # https://github.com/optuna/optuna-examples/blob/main/pytorch/pytorch_lightning_simple.py
@@ -565,8 +568,8 @@ class ForecastModel:
 
                 )
 
-                self.learn = SequenceLearner(self._model,loss,learning_rate=learning_rate,cosine_lr=cosine_lr,
-                    _loaderfunc=_data.get_dataloader,n_iterations=(_data.batch_size * epochs))
+                self.learn = SequenceLearner(model = self._model, loss_func = loss,lr=learning_rate,cosine_lr=cosine_lr,
+                    _loaderfunc=_data.get_dataloader,n_iterations=(_data.batch_size * epochs),future = self.future,denormalize = self.denormalize)
             if not reset:
 
                 try:
@@ -602,65 +605,18 @@ class ForecastModel:
         return (tensor - self.mean[values]) / self.std[values]
     
     def test(self,iterative_forecast=False,checkpoint="best"):
-        # self.trainer.save_checkpoint(f"{self.checkpoint_dir}/last_epoch.ckpt")
-        # self.learn.load_from_checkpoint(self.checkpoint_callback.best_model_path) 
-        self.trainer.test(self.learn, ckpt_path=checkpoint)
+        # self.trainer.test(self.learn, ckpt_path=f"{self.store_dir}/{checkpoint}.ckpt")
 
         if self.n_epochs > 1: 
             self.plot_test(version=checkpoint,iterative_forecast=iterative_forecast)
         else:
             self.plot_test(version="before",iterative_forecast=iterative_forecast)
 
-    def get_test_plot_data(self,iterative_forecast):
-        torch.set_grad_enabled(False)
-        self._model.eval()        
-        y_list = []
-        y_hat_list = []
-        error_list = []
-        for _batch in tqdm(self._loaderfunc(subset="test_plot"),position=0,leave=True):
-            """" We either predict with iterative forecasting or not.
-            with iterative forecasting we use the models prediction as input for the next timestep prediction.
-                    every batch contains n_iterative_forecasts sequences.
-            without iterative forecasting we predict 1 or more timsteps ahead based on 1 prediction """
-            x, y = _batch                 # _batch = (B_size, Timesteps, Features) 
-            # from y we take out the futures of each sequence
-            # the shape of y is always (nsequences, seq len, features)
-            # in case of not iterative we just select as below, resulting in size (16,5,17)
-            # in case of iterative we do the same, resulting in (5,1,17)
-            if iterative_forecast:
-                y_hat = torch.zeros((1,y.shape[0],y.shape[2]), device=x.device) #(1, futures, neurons)
-                y = y[:,-self.future:,:].transpose(0,1)
-                n_predictions = y.shape[1]
-                x = x[:1]  # first sequence of (\timesteps) length
-                activation_status = int(x[0,-1,-1])
-                """ forecast by recursive model calls"""
-                for i in range(n_predictions):
-                    next_step, _ = self._model.forward(x)  # (1, Timesteps, neurons) 
-                    # we assume we deal with laser activity data which is part of x but not part of y 
-                    y_hat[:,i] = next_step[:,-1:,:] 
-                    next_step_x = torch.cat((next_step[:, -1:, :],torch.full((1,1,1),activation_status if i==0 else 0,device=x.device)),dim=-1)
-                    x = torch.cat((x[:, 1:, :], next_step_x), dim=1) #input for next prediction
-            else :
-                y = y[:,-self.future:,:]
-                """forecast directly multiple steps ahead with 1 model call"""
-                y_hat, _ = self._model.forward(x) # (B_size, Timesteps, Features)
-                y_hat = y_hat[:,-self.future:,:] #(sequences,timesteps,neurons) > (sequences,futures,neurons)
-
-            y_de = self.denormalize(y,"y").flatten(0,1)
-            y_hat_de = self.denormalize(y_hat,"y").flatten(0,1)
-            error = (y_de - y_hat_de)
-            y_list.append(y_de.detach().cpu())
-            y_hat_list.append(y_hat_de.detach().cpu())
-            error_list.append(error.detach().cpu())
-        # print(len(y_list),y_list[0].shape,y_hat_list[0].shape)  #4 torch.Size([16, 5, 17])   | 53 torch.Size([1, 5, 17]) torch.Size([1, 5, 17])
-        y_list = torch.cat(y_list, dim=0)
-        y_hat_list = torch.cat(y_hat_list, dim=0)
-        error_list = torch.cat(error_list, dim=0)
-        
-        return (y_list,y_hat_list,error_list)
-
     def plot_test(self,version="before",iterative_forecast=False):
-        y, y_hat, error =  self.get_test_plot_data(iterative_forecast)
+        predictions = self.trainer.predict(dataloaders = self._loaderfunc(subset="test_plot"),ckpt_path=f"{self.load_dir}/{version}.ckpt")
+        y,y_hat,error = map(torch.cat, zip(*predictions))
+        print(y.shape, y_hat.shape, error.shape)
+
         if self.n_forecasts> 1:
             fig, axes = plt.subplots(self.out_features, 1, figsize=(30,4*self.out_features),constrained_layout=True)
             axes = axes.ravel()

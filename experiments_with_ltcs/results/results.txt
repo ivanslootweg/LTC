@@ -30,6 +30,12 @@ these　models tend to overfit
 
 1           0.05    53      1           0.005       36     0.3680   1808    FUTURE　　　 0.5038
 1           0.05    53      1           0.001       32     0.6043   2302    FUTURE　　　 0.6043     for 400 epochs
+1           0.05    53      1           0.001       32              3012    FUTURE　　              400 epochs. new binning  | store these in other checkpoint name like:  be sure to select the correct dataset!
+python3 forecast.py --epochs 400 --gpus 2 --initial_lr 0.001 --dataset neuronlaser \
+    --seq_len 32  --mixed_memory --future 5 --future_loss --size 32 --checkpoint_id 2024073012 --model_id 2024073014 --iterative_forecast 
+1           0.05    53      1           0.001       32              3011    FUTURE　　              400 epochs. new binning. n-20 dataset
+python3 forecast.py --epochs 400 --gpus 2 --initial_lr 0.001 --dataset neuronlaser \
+    --seq_len 32  --mixed_memory --future 5 --future_loss --size 32 --checkpoint_id 2024073011 --model_id 2024073013 --iterative_forecast 
 1           0.05    53      1           0.022       36     0.2314   1807    ALL　        0.2373
 1           0.05    53      1           0.001       32     0.2433   2301    ALL　        0.2593     for 400 epochs
 2302 vs 1808 whereas 2302 mamanges to fit the infrequent neuron, 1808 fits better to the other spikes

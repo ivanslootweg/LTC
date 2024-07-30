@@ -38,8 +38,6 @@ plt.rcParams.update({
 
 multiprocessing.set_start_method('spawn', force=True)
 
-global plot_listener
-global lines
 
 class PauseDataHandler(FileSystemEventHandler):
     def __init__(self,recording_id,prepare_realtime_data):
@@ -203,7 +201,6 @@ class RealtimeForecastModel(ForecastModel):
         self.recorded_history = torch.empty((0,self.in_features-1),dtype=torch.float32)
         self.predict_pos_history = torch.full((self.n_forecasts,self.in_features-1),0)
         self.predict_neg_history = torch.full((self.n_forecasts,self.in_features-1),0)
-        # self.data_condition = kwargs["_data"].data_condition
 
 
         # self.fig,self.axes = plt.subplots(int(self.out_features/2), 2, figsize=(30,10*self.out_features),constrained_layout=True)
