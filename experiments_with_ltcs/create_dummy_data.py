@@ -20,7 +20,7 @@ def create_dummy_data(recording_id="dummy"):
     if not os.path.exists(f"recordings/{recording_id}"):
         os.makedirs(f"recordings/{recording_id}")
     # for t in range(0,10*sample_length,sample_length):
-    for t in map(lambda x: x/1000.0, range(0,20*sample_length,sample_length)):
+    for t in map(lambda x: x/1000.0, range(0,100*sample_length,sample_length)):
         # print(fake_spikes.shape,fakqe_spikes[0])
         new_fake_spikes = list(map(lambda neuron : list(sorted([
             random.uniform(t,t+sample_length/1000) for i in range(frates[neuron])] ) )
@@ -33,7 +33,7 @@ def create_dummy_data(recording_id="dummy"):
         # print([(len(f), n) for (f,n) in zip(fake_spikes,frates.values())],flush=True)
         scipy.io.savemat(f"recordings/{recording_id}/activations_temp.mat",mdict=mat_contents)
         shutil.copy(f"recordings/{recording_id}/activations_temp.mat",f"recordings/{recording_id}/activations.mat")
-        time.sleep(1)
+        time.sleep(2)
     return
 
 if __name__ == "__main:__":

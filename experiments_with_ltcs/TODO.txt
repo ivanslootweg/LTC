@@ -26,6 +26,11 @@ Model fitting
         test predictions on BEST Model          done. (12 07)
         compare iterative prediction with       pending 1807
                 future 5 prediction             
+        
+        cross validation for sigma              running 31 07
+        cross validation for sequence length    running 31 07
+        implement cross validation              done. 31.07
+        cross validation for model params       queue(2). run after decision on sigma and sequence length
 
 Model implementation
         predict more timestaps ahead            experimented with 2 timesteps  
@@ -45,7 +50,11 @@ Model implementation
         incremental prediction plotting         done. 1707
         scheduled sampling in training          queue (1)
         revisit chunk selection.                done 16 07. training data seqs are from same chunk. sequential val and test chunks. random train chunks
-        real-time implementation in python      pending (17/18 07)
+        real-time implementation in python      pending (24/25/26/29 07)
+                first with threads and locks    
+                now with multiprocessing and pipes
+                data loads only new bins to decrease
+                communication overhead
         read into jean`s work                   pending 16,17 07
         write code for resuming                 done 18 07
         implement predict datasets              done 2207
@@ -55,11 +64,9 @@ Model implementation
         for plots include the laser activation  done. 2207 (not in plot but present in data)
                 at the first future position 
                 (-future)!
-        implement predict function in learner   queue (3)    
-        read into jean's system                 queue (2)   
-        realtime predicting                     done 2407
-                with file locks 
-                seperate plot and predict
+        implement predict function in learner   done 30 07 
+        read into jean's system                 done 30 07 
+
         
         fix plot function + run for 400 epochs  done 2307
                 + evaluate all models           
@@ -92,3 +99,6 @@ TO DO :
 
 handle the fact that the realtime data does not have laser data
 and therefore this is not normalised
+
+python3 forecast.py --epochs 50 --gpus 0 --initial_lr 0.001 --dataset neuronlaser  \
+        --seq_len "optimise"  --mixed_memory --future 1 --future_loss --size 32 --sigma 7

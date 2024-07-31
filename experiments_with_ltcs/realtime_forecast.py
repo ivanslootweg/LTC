@@ -193,7 +193,6 @@ class RealtimeNeuronLaserData(NeuronLaserData):
 class RealtimeForecastModel(ForecastModel):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.set_model()
         self.total_read_timesteps = 0
         self.trainer = pl.Trainer()
         self.prepare_realtime_data = kwargs["_data"].prepare_realtime_data
@@ -219,7 +218,13 @@ class RealtimeForecastModel(ForecastModel):
         # self.ani = FuncAnimation(self.fig, self.update_plot, interval=500,save_count=20) #run in main thread
         # plt.show()
 
-    def run(self,recording_id,gpus,pipe_connection,plot_sender):  
+    def run(self,recording_id,gpus,pipe_connection,plot_sender,model_size,mixed_memory,model_type):  
+        self.model_size = model_size
+        self.mixed_memory = mixed_memory
+        self.model_type = model_type
+
+            
+        self.set_model()
         try:    
             self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
         except: 
@@ -285,7 +290,7 @@ class RealtimeForecastModel(ForecastModel):
             in_x = self.norm_recorded_history[:,-self.seq_len:,:]
             x_pos = x_neg = in_x # (1,seq_len,neurons)
             y_hat_pos = y_hat_neg  = torch.empty((1,self.n_iterative_forecasts,in_x.shape[-1]), device=self.device)
-            # _start = dt.datetime.now()
+            _start = dt.datetime.now()
             for i in range(self.n_iterative_forecasts):
                 """we only add a 1 for laser activation at the 2 direct following bin, no  other bins"""
                 x_pos_in = torch.cat((x_pos,torch.full((1,32,1),1 if i < 2 else 0,device=self.device)),dim=-1)
@@ -304,7 +309,7 @@ class RealtimeForecastModel(ForecastModel):
                     for every neuron + activation
                     make sure to include the laseractivation feature in the predictions
             """
-            # print('Duration: {}'.format(dt.datetime.now() - _start),flush=True)
+            print('Duration: {:.4f}'.format((dt.datetime.now() - _start).total_seconds() *1000),flush=True)
             y_hat_pos_de = self.denormalize(y_hat_pos.detach().cpu(),"y").flatten(0,1) # (5,17)
             y_hat_neg_de = self.denormalize(y_hat_neg.detach().cpu(),"y").flatten(0,1)
         
@@ -312,7 +317,7 @@ class RealtimeForecastModel(ForecastModel):
             # self.y_hat_neg_de = y_hat_neg_de
             self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_pos_de), dim= 0) 
             self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_neg_de), dim= 0) 
-            print("records so far: ", self.recorded_history.shape, self.predict_pos_history.shape,self.predict_neg_history.shape,flush=True)
+            # print("records so far: ", self.recorded_history.shape, self.predict_pos_history.shape,self.predict_neg_history.shape,flush=True)
             plot_length = min(100, self.total_read_timesteps)
             self.plot_sender.send((plot_length,
                     self.predict_pos_history[-(plot_length+self.n_forecasts):],self.predict_neg_history[-(plot_length+self.n_forecasts):], 
@@ -323,15 +328,15 @@ class RealtimeForecastModel(ForecastModel):
 def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,plot_sender,args):
     dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
     dataset_data.pipe_connection = child_connection
-    model = RealtimeForecastModel(model_id = model_id,model_type=model_type,mixed_memory=mixed_memory,_data=dataset_data,model_size=args.size,task=task)
-    model.run(recording_id,gpus=args.gpus[0],pipe_connection = parent_connection,plot_sender = plot_sender)
+    model = RealtimeForecastModel(model_id = model_id,_data=dataset_data,task=task)
+    model.run(recording_id,gpus=args.gpus[0],pipe_connection = parent_connection,plot_sender = plot_sender,model_type=model_type,model_size =args.size,mixed_memory=mixed_memory)
 
 
 def main_update_plot(plot_listener,fig,axes,lines):
-    if not plot_listener.poll():
-        return (fig,axes,lines)
-    else:
-        print(True)
+    # if not plot_listener.poll():
+    #     return (fig,axes,lines)
+    # else:
+    #     print(True)
     plot_length,  predict_pos_history,predict_neg_history , recorded_history = plot_listener.recv()
     if plot_length == 0:
         return (fig,axes,lines)  # No data to plot yet
@@ -344,8 +349,10 @@ def main_update_plot(plot_listener,fig,axes,lines):
         line_pos.set_data(range(plot_pos.shape[0]), plot_pos[:, i])
         line_neg.set_data(range(plot_neg.shape[0]), plot_neg[:, i])
         line_rec.set_data(range(history.shape[0]), history[:, i])
-        axes[i].relim()
-    
+        # Recalculate limits for the current axis
+        # axes[i].relim()
+        # axes[i].autoscale_view()
+
     fig.canvas.draw()
     fig.canvas.flush_events()
     # plt.show(ti)
@@ -393,12 +400,13 @@ if __name__ == "__main__":
     for feat_nr, ax in enumerate(axes):
         ax.set_ylim(-0.1,None) 
         ax.set_xlim(0,64)
-        line_pos, = ax.plot([], [], lw=0.5, label="With activation")
-        line_neg, = ax.plot([], [], lw=0.5, label="No activation")
-        line_rec, = ax.plot([], [], lw=0.5, label="Recording")
+        line_pos, = ax.plot([], [], lw=1, linestyle="-", alpha =0.5,label="With activation")
+        line_neg, = ax.plot([], [], lw=1, linestyle="--",alpha =0.5,  label="No activation")
+        line_rec, = ax.plot([], [], lw=1, linestyle="--", alpha =0.5,label="Recording")
         lines.append((line_pos, line_neg, line_rec))
         ax.legend(loc='upper right')
 
+    plt.show(block=False)
     print("prepared plot")
 
     processes = [] 
@@ -429,8 +437,8 @@ if __name__ == "__main__":
 
     try:
         while True:
-            plt.show()
             fig,ax, lines = main_update_plot(plot_listener,fig,axes,lines)
+            plt.pause(0.1)
     except KeyboardInterrupt:
         plt.close('all')
         data_observer.stop()

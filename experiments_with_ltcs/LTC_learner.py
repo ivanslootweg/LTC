@@ -18,7 +18,7 @@ class SequenceLearner(pl.LightningModule):
         # self.future = future
         for (k,v) in kwargs.items():
             setattr(self,k,v)
-        self.save_hyperparameters(ignore=["model","_loaderfunc"])   
+        self.save_hyperparameters(ignore=["model","_loaderfunc","loss_func","denormalize"])   
     
     def train_dataloader(self):
         # return self.train_dataloader

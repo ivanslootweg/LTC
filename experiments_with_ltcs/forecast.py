@@ -15,6 +15,8 @@ from functools import partial
 from ncps.torch import LTC
 from ncps.wirings import AutoNCP, FullyConnected
 
+from sklearn.model_selection import KFold
+
 
 from LTC_learner import SequenceLearner
 from load_data import load_training_data
@@ -80,7 +82,6 @@ def load_trace():
 
     return features, traffic_volume
 
-
 def cut_in_sequences(x,seq_len,inc=1,prognosis=1):
     sequences_x = []
     sequences_y = []
@@ -102,11 +103,10 @@ class DataBaseClass:
         train_with_noise = False
         for _name in dataset_names:
             _array = getattr(self,_name)
-            print(f"{_name} shape: ", str(_array.shape))
             _array = self.normalize(_array,_name.split("_")[-1])
             print(f"{_name} shape: ", str(_array.shape),f"{_name} post normalisation: ",_array.mean())
             if "train" in _name and train_with_noise:
-                noise = np.random.normal(0, 0.1, _array.shape) 
+                noise = np.random.normal(0, 0.1, _array.shape)   
                 _array = _array + noise
                 setattr(self,_name, _array)
                 print(f"{_name} post noise: ",str(_array.mean()))              
@@ -150,7 +150,6 @@ class DataBaseClass:
             del res
         return (tensor - self.mean[values][...,:tensor.shape[-1]]) / self.std[values][...,:tensor.shape[-1]]
 
-    @classmethod    
     def denormalize(self,tensor,values="x"):
         return tensor * self.std[values][...,:tensor.shape[-1]] + self.mean[values][...,:tensor.shape[-1]]
 
@@ -281,13 +280,13 @@ class CheetahData(DataBaseClass):
         return np.stack(all_x,axis=1),np.stack(all_y,axis=1)
 
 class NeuronData(DataBaseClass):
-    def __init__(self,binwidth=0.05,seq_len=32,future=1,iterative_forecast=False,batch_size=16):
-
+    def __init__(self,binwidth=0.05,seq_len=32,future=1,iterative_forecast=False,batch_size=16,cross_val_fold=None):
         self.seq_len = seq_len
         self.batch_size = batch_size
         self.future = future
         self.iterative_forecast = iterative_forecast
         self.n_iterative_forecasts = 0
+        self.cross_val_fold = cross_val_fold
         if self.iterative_forecast:
             self.n_iterative_forecasts = future
             self.future = 1
@@ -340,25 +339,37 @@ class NeuronData(DataBaseClass):
                 setattr(self,f"predict_x",temp_x)    
                 setattr(self,f"predict_y",temp_y)  
 
-    def train_test_split(self,x):
+        print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
+        kf = KFold(n_splits=5,shuffle=False)
+        self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
+
+    def train_test_split(self,x) :
         """Create train val test split. We need each of these splits to be created from sequential chunks
         but we also want to introduce some randomness, Therefore we cut 2 random chunks: a val and test chunk.
         """
         val_size = int(np.floor(x.shape[0] *0.15))
-        test_size = int(np.floor(x.shape[0] *0.10))
-        N = x.shape[0]  
-        # start of the validation chunk                         [all start positions in the sequence minus some leading space]
-        start_val = np.random.RandomState(56034).randint(0, (N - val_size))
-        
-        # pick start of test chunk from set of suitable start indices of test chunk. Such that val and test chunk do not overlap
-        #                                    [all start positions in the sequence ]     -       [indices in val chunk and some leading space (prevent overlap between test and val)]
-        test_start_indices = list(set(range((N - (self.seq_len+self.future)) - test_size)) - set(range(start_val-test_size, start_val + val_size)))
-        start_test = np.random.RandomState(49823).choice(test_start_indices)
-        
+        test_size = int(np.floor(x.shape[0] *0.1))
+
+        if self.cross_val_fold:
+            _, test_indices= self.kfold_splits[self.cross_val_fold-1]
+            _, val_indices = self.kfold_splits[(self.cross_val_fold-1+2)%5]
+            start_val = val_indices[0]*32
+            start_test = test_indices[0]*32
+        else:
+            # start of the validation chunk                         [all start positions in the sequence minus some leading space]
+            start_val = np.random.RandomState(56034).randint(0, (self.n_bins - val_size))
+            
+            # pick start of test chunk from set of suitable start indices of test chunk. Such that val and test chunk do not overlap
+            #                                    [all start positions in the sequence ]     -       [indices in val chunk and some leading space (prevent overlap between test and val)]
+            test_start_indices = list(set(range((self.n_bins - (self.seq_len+self.future)) - test_size)) - set(range(start_val-test_size, start_val + val_size)))
+            start_test = np.random.RandomState(49823).choice(test_start_indices)
+            
         # Extract the val and test chunk and assign the rest to the train chunk
         val_data = x[start_val:start_val +val_size]
         test_data = x[start_test:start_test +test_size]
         chunk_indices = np.sort(list(set(range(start_test,start_test+test_size)) | set(range(start_val,start_val+val_size))))
+
+        #obtain the space between test and val chunks. we cannot do np indexing on x(~val_indices|test_indices) because x is a list of objects
         try:
             chunk_separation = np.where(chunk_indices[:-1] != (chunk_indices[1:] -1) )[0][0]
         except:
@@ -369,16 +380,17 @@ class NeuronData(DataBaseClass):
             x[chunk_indices[-1]:]
         ]
 
-
+        print(f"val idx: {start_val} - {start_val + val_size} ({val_size}) test idx: {start_test} {start_test + test_size} ({test_size})")
         return (val_data, test_data,train_data)  
-
+    
 class NeuronLaserData(DataBaseClass):
-    def __init__(self,binwidth=0.05,seq_len=32,future=1,iterative_forecast=False,batch_size=16):
-        self.seq_len = seq_len
+    def __init__(self,binwidth=0.05,sigma=5,seq_len=32,future=1,iterative_forecast=False,batch_size=16):
+        self.seq_len = int(seq_len)
         self.batch_size = batch_size
         self.binwidth = binwidth
         self.future = future
         self.iterative_forecast = iterative_forecast
+        self.sigma = sigma
         self.n_iterative_forecasts = 0
         if self.iterative_forecast:
             self.n_iterative_forecasts = future
@@ -391,13 +403,15 @@ class NeuronLaserData(DataBaseClass):
         after stack (after make sequences):  (seq_len,N_sequences,T,Neurons)
         """
         super().__init__()
+        self.set_kfold_splits()
 
-    def load_data(self):
+    def load_data(self, cross_val_fold=None):
+        self.cross_val_fold = cross_val_fold
         if self.binwidth == 0.05:
-            # x = np.load("data/neurons/activations_ADL1_2023-10-24_22-40-25.npy")
-            # x2 = np.load("data/neurons/laserpulses_ADL1_2023-10-24_22-40-25.npy")
-            x = np.load("data/neurons/activations_ADL1_2023-07-31_00-09-22.npy")
-            x2 = np.load("data/neurons/laserpulses_ADL1_2023-07-31_00-09-22.npy")
+            x = np.load(f"data/neurons/activations_ADL1_2023-10-24_22-40-25_s{self.sigma}.npy")
+            x2 = np.load(f"data/neurons/laserpulses_ADL1_2023-10-24_22-40-25_s{self.sigma}.npy")
+            # x = np.load(f"data/neurons/activations_ADL1_2023-07-31_00-09-22_s{self.sigma}.npy")
+            # x2 = np.load(f"data/neurons/laserpulses_ADL1_2023-07-31_00-09-22_s{self.sigma}.npy")
         # elif self.binwidth == 0.5:
         #     x = np.load("data/neurons/activations_f0.5_w1.0.npy")
         #     x2 = np.load("data/neurons/laserpulses_f0.5_w1.0.npy")
@@ -405,6 +419,7 @@ class NeuronLaserData(DataBaseClass):
         x = x.astype(np.float32)
         x = np.transpose(x)
         # train val test split
+        self.n_bins = x.shape[0] 
         self.valid_chunk,self.test_chunk, self.train_chunk = self.train_test_split(x)
         
         self.increment = max(int(x.shape[0] / 1000),2)
@@ -444,25 +459,38 @@ class NeuronLaserData(DataBaseClass):
                 setattr(self,f"test_plot_x",temp_x)    
                 setattr(self,f"test_plot_y",temp_y)  
 
+    def set_kfold_splits(self):
+        print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
+        kf = KFold(n_splits=5,shuffle=False)
+        self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
+
     def train_test_split(self,x) :
         """Create train val test split. We need each of these splits to be created from sequential chunks
         but we also want to introduce some randomness, Therefore we cut 2 random chunks: a val and test chunk.
         """
         val_size = int(np.floor(x.shape[0] *0.15))
         test_size = int(np.floor(x.shape[0] *0.1))
-        N = x.shape[0]  
-        # start of the validation chunk                         [all start positions in the sequence minus some leading space]
-        start_val = np.random.RandomState(56034).randint(0, (N - val_size))
-        
-        # pick start of test chunk from set of suitable start indices of test chunk. Such that val and test chunk do not overlap
-        #                                    [all start positions in the sequence ]     -       [indices in val chunk and some leading space (prevent overlap between test and val)]
-        test_start_indices = list(set(range((N - (self.seq_len+self.future)) - test_size)) - set(range(start_val-test_size, start_val + val_size)))
-        start_test = np.random.RandomState(49823).choice(test_start_indices)
-        
+
+        if self.cross_val_fold:
+            _, test_indices= self.kfold_splits[self.cross_val_fold-1]
+            _, val_indices =self.kfold_splits[(self.cross_val_fold-1+2)%5]
+            start_val = val_indices[0]*32
+            start_test = test_indices[0]*32
+        else:
+            # start of the validation chunk                         [all start positions in the sequence minus some leading space]
+            start_val = np.random.RandomState(56034).randint(0, (self.n_bins - val_size))
+            
+            # pick start of test chunk from set of suitable start indices of test chunk. Such that val and test chunk do not overlap
+            #                                    [all start positions in the sequence ]     -       [indices in val chunk and some leading space (prevent overlap between test and val)]
+            test_start_indices = list(set(range((self.n_bins - (self.seq_len+self.future)) - test_size)) - set(range(start_val-test_size, start_val + val_size)))
+            start_test = np.random.RandomState(49823).choice(test_start_indices)
+            
         # Extract the val and test chunk and assign the rest to the train chunk
         val_data = x[start_val:start_val +val_size]
         test_data = x[start_test:start_test +test_size]
         chunk_indices = np.sort(list(set(range(start_test,start_test+test_size)) | set(range(start_val,start_val+val_size))))
+
+        #obtain the space between test and val chunks. we cannot do np indexing on x(~val_indices|test_indices) because x is a list of objects
         try:
             chunk_separation = np.where(chunk_indices[:-1] != (chunk_indices[1:] -1) )[0][0]
         except:
@@ -477,16 +505,16 @@ class NeuronLaserData(DataBaseClass):
         return (val_data, test_data,train_data)  
     
 class ForecastModel:    
-    def __init__(self,model_id = None,_data=None,task=None,model_size =None,mixed_memory=True,model_type="ltc",checkpoint_id = None):
-        self.model_type = model_type
+    def __init__(self,model_id = None,_data=None,task=None,checkpoint_id = None):
         self.task = task
         self.model_id = model_id
-        self.model_size = model_size
-        self.mixed_memory = mixed_memory
         self.experiment_name = f"{self.task}_{self.model_id}"
         self.store_dir = f"./checkpoints/{self.task}_{self.model_id}"
         self.load_dir =  f"./checkpoints/{self.task}_{checkpoint_id}" if checkpoint_id else self.store_dir 
         self.load_path = f"{self.load_dir}/last.ckpt"  
+        self.set_data(_data)
+
+    def set_data(self,_data):
         self.future = _data.future
         self.n_iterative_forecasts = _data.n_iterative_forecasts
         self.n_forecasts = _data.n_forecasts
@@ -500,6 +528,8 @@ class ForecastModel:
         self._loaderfunc = _data.get_dataloader
         self.batch_size = _data.batch_size
         self.iterative_forecast = _data.iterative_forecast
+        self.data_loader = _data.get_dataloader
+        self.cross_val_fold = _data.cross_val_fold
 
     def set_model(self):
         if(self.model_type.startswith("ltc")):
@@ -509,73 +539,82 @@ class ForecastModel:
 
         # lr_logger = LearningRateMonitor(logging_interval='step') # this is a callback
 
-    def fit(self,trial=None,_data=None,epochs=100,learning_rate=1e-2,cosine_lr=False,optimise=False,gpus=None,future_loss = False,reset = False):
-            self.n_epochs = epochs
+    def set_optuna_learner(self):
+        self.trainer = pl.Trainer(
+            logger = False,
+            max_epochs= self.epochs,
+            gradient_clip_val=1,
+            accelerator= 'cpu' if self.gpus is None else 'gpu',
+            devices=self.gpus,
+            callbacks=[PyTorchLightningPruningCallback(self.trial, monitor="val_loss")],
+
+        )
+
+        self.learn = SequenceLearner(model = self._model, loss_func = self.loss,lr=self.learning_rate,cosine_lr=self.cosine_lr,
+            _loaderfunc= self.data_loader,n_iterations=(self.batch_size * self.epochs),future = self.future,denormalize = self.denormalize) 
+
+    def set_fit_learner(self):
+        # Modelcheckoint is used to obtain the last and best checkpoint
+        # dirpath should be load dir, which should refer to checkpoint 
+        # 
+        self.checkpoint_callback = ModelCheckpoint(
+            save_top_k=1,
+            monitor="val_loss",
+            mode="min",
+            dirpath=self.load_dir ,
+            filename="best",
+            save_on_train_epoch_end=True,
+            save_last=True
+        )       
+
+        self.tensorboard_logger = TensorBoardLogger(save_dir="log",
+                version = f"{self.model_id}",
+                name=f"{self.task}_{self.model_type}",
+                default_hp_metric=False)
+
+        self.trainer = pl.Trainer(
+            logger = tensorboard_logger,
+            max_epochs= self.epochs,
+            gradient_clip_val=1,
+            accelerator= 'cpu' if self.gpus is None else 'gpu',
+            devices=self.gpus,
+            callbacks=[self.checkpoint_callback],
+        )
+
+        self.learn = SequenceLearner(model= self._model,loss_func = loss,lr=learning_rate,cosine_lr=cosine_lr,iterative_forecast=self.iterative_forecast,
+            _loaderfunc=self._loaderfunc,n_iterations=(self.batch_size * epochs),future = self.future,denormalize = self.denormalize)
+
+    def fit(self,trial=None,epochs=100,learning_rate=1e-2,cosine_lr=False,model_size =None,mixed_memory=True,model_type="ltc",gpus=None,future_loss = False,reset = False):
+            self.epochs = epochs
+            self.cosine_lr = cosine_lr
+            self.gpus = gpus
+            self.trial = trial
+            self.model_size = model_size
+            self.mixed_memory = mixed_memory
+            self.model_type = model_type
+            self.learning_rate = learning_rate
+
+
             print(self.load_dir,self.store_dir)
             if future_loss:
-                loss = MSELossfuture(n_future=self.future)
+                self.loss = MSELossfuture(n_future=self.future)
             else:
-                loss = torch.nn.MSELoss()
+                self.loss = torch.nn.MSELoss()
+            self.set_model()
 
-            if not optimise:
-                self.set_model()
-                # Modelcheckoint is used to obtain the last and best checkpoint
-                # dirpath should be load dir, which should refer to checkpoint 
-                # 
-                self.checkpoint_callback = ModelCheckpoint(
-                    save_top_k=1,
-                    monitor="val_loss",
-                    mode="min",
-                    dirpath=self.load_dir ,
-                    filename="best",
-                    save_on_train_epoch_end=True,
-                    save_last=True
-                )       
-
-                tensorboard_logger = TensorBoardLogger(save_dir="log",
-                        version = f"{self.model_id}",
-                        name=f"{self.task}_{self.model_type}",
-                        default_hp_metric=False)
-
-                self.trainer = pl.Trainer(
-                    logger = tensorboard_logger,
-                    max_epochs= epochs,
-                    gradient_clip_val=1,
-                    accelerator= 'cpu' if gpus is None else 'gpu',
-                    devices=gpus,
-                    callbacks=[self.checkpoint_callback],
-                )
-
-                self.learn = SequenceLearner(model= self._model,loss_func = loss,lr=learning_rate,cosine_lr=cosine_lr,iterative_forecast=self.iterative_forecast,
-                    _loaderfunc=self._loaderfunc,n_iterations=(self.batch_size * epochs),future = self.future,denormalize = self.denormalize)
-
+            if not trial:
+                self.set_fit_learner()
             else:
-                # https://github.com/optuna/optuna-examples/blob/main/pytorch/pytorch_lightning_simple.py
-                learning_rate = trial.suggest_float("learning_rate",1e-4,1e-2)
-                cosine_lr = trial.suggest_int("cosine_lr",0,1) if cosine_lr else 0
-                model_size = trial.suggest_int("model_size",self.out_features +3,48,step=4)
+                self.set_optuna_learner()
 
-                self.model_size = model_size
-                self.set_model()
-
-                self.trainer = pl.Trainer(
-                    logger = False,
-                    max_epochs= epochs,
-                    gradient_clip_val=1,
-                    accelerator= 'cpu' if gpus is None else 'gpu',
-                    devices=gpus,
-                    callbacks=[PyTorchLightningPruningCallback(trial, monitor="val_loss")],
-
-                )
-
-                self.learn = SequenceLearner(model = self._model, loss_func = loss,lr=learning_rate,cosine_lr=cosine_lr,
-                    _loaderfunc=_data.get_dataloader,n_iterations=(_data.batch_size * epochs),future = self.future,denormalize = self.denormalize)
-            if not reset:
-
-                try:
+            try:
+                if not reset and not trial:
                     self.trainer.fit(self.learn,ckpt_path=self.load_path)
-                except:
-                    tensorboard_logger.log_hyperparams({
+                else:
+                    raise ValueError
+            except:
+                if hasattr(self,"tensorboard_logger"):
+                    self.tensorboard_logger.log_hyperparams({
                         "lr": learning_rate,
                         "cosine_lr": cosine_lr,
                         "seq_len":self.seq_len,
@@ -583,27 +622,20 @@ class ForecastModel:
                         "model_size": self.model_size,
                         "future loss": future_loss
                     })
-                    self.trainer.fit(self.learn)
-            else:
-                tensorboard_logger.log_hyperparams({
-                    "lr": learning_rate,
-                    "cosine_lr": cosine_lr,
-                    "seq_len":self.seq_len,
-                    "future": self.n_forecasts,
-                    "model_size": self.model_size,
-                    "future loss": future_loss
-                })
                 self.trainer.fit(self.learn)
+
         
-            if optimise:
+            if trial:
                return self.trainer.callback_metrics["val_loss"].item()
             
     def denormalize(self,tensor,values="x"):
-        return tensor * self.std[values] + self.mean[values]
+        # return tensor * self.std[values] + self.mean[values]
+        return tensor * self.std[values][...,:tensor.shape[-1]] + self.mean[values][...,:tensor.shape[-1]]
 
     def normalize(self,tensor,values="x"):
-        return (tensor - self.mean[values]) / self.std[values]
-    
+        # return (tensor - self.mean[values]) / self.std[values]
+        return (tensor - self.mean[values][...,:tensor.shape[-1]]) / self.std[values][...,:tensor.shape[-1]]
+
     def test(self,iterative_forecast=False,checkpoint="best"):
         # self.trainer.test(self.learn, ckpt_path=f"{self.store_dir}/{checkpoint}.ckpt")
 
@@ -694,6 +726,45 @@ study_names = {
     "occupancy":20240626131851
 }
 
+def optimise_sigma(model,args,trial):
+    sigma = trial.suggest_int("sigma",1,8)
+    some_data_class = data_classes[args.dataset]
+    val_scores = 0
+    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len,iterative_forecast=args.iterative_forecast,sigma=sigma)
+    for cross_val_fold in range(5):
+        print(f"--- fold {cross_val_fold} ---")
+        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
+        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
+        val_scores += val_score
+    return val_scores / 5
+
+def optimise_seq_len(model,args,trial):
+    seq_len = trial.suggest_discrete_uniform("seq_len",32,80,16)
+    some_data_class = data_classes[args.dataset]
+    val_scores = 0
+    dataset_data = some_data_class(future=args.future,seq_len=seq_len,iterative_forecast=args.iterative_forecast,sigma=args.sigma)
+    for cross_val_fold in range(5):
+        print(f"--- fold {cross_val_fold} ---")
+        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
+        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
+        val_scores += val_score
+    return val_scores / 5
+
+def optimise_model_params(model,args,trial):
+    # https://github.com/optuna/optuna-examples/blob/main/pytorch/pytorch_lightning_simple.py
+    args["learning_rate"] = trial.suggest_float("learning_rate",1e-4,1e-2)
+    args["cosine_lr"] = trial.suggest_int("cosine_lr",0,1) if cosine_lr else 0
+    args["model_size"]  = trial.suggest_int("model_size",self.out_features +3,48,step=4)
+    val_score = model.fit(trial=trial,epochs=args.epochs,gpus=args.gpus,learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
+                                            model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size)
+    return val_score
+
+def set_data_and_fit(dataset_data,model,args,trial):
+    model.set_data(dataset_data)
+    val_score = model.fit(trial=trial,epochs=args.epochs,gpus=args.gpus,learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
+                                            model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size)
+    return val_score
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -705,7 +776,7 @@ if __name__ == "__main__":
     parser.add_argument('--initial_lr',default=0.02,type=float)
     parser.add_argument('--cosine_lr',action='store_true')
     parser.add_argument('--dataset',default="cheetah",type=str) 
-    parser.add_argument('--seq_len',default=32,type=int)
+    parser.add_argument('--seq_len',default=32,type=str)
     parser.add_argument('--future',default=1,type=int)
     parser.add_argument('--iterative_forecast',action='store_true')
     parser.add_argument('--optimise',action='store_true')
@@ -714,15 +785,17 @@ if __name__ == "__main__":
     parser.add_argument('--future_loss',action='store_true')
     parser.add_argument('--binwidth',default =0.05, type= float)
     parser.add_argument('--model_id',default =0, type= int)
+    parser.add_argument('--sigma',default =5, type= str)
     parser.add_argument('--checkpoint_id',default =0, type= int)
     parser.add_argument('--reset',action='store_true')
 
     args = parser.parse_args()
-
+    use_optuna = (args.sigma == "optimise" or args.optimise or args.seq_len == "optimise")
 
     assert args.future > 0 , "Future should be > 0"
     some_data_class = data_classes[args.dataset]
-    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len,binwidth=args.binwidth,iterative_forecast=args.iterative_forecast)
+    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len if args.seq_len != "optimise" else 32,binwidth=args.binwidth,
+        iterative_forecast=args.iterative_forecast,sigma=args.sigma if args.sigma != "optimise" else 5)
     task = args.dataset + "_forecast"
     checkpoint_id = None
     if not args.model_id:
@@ -735,27 +808,44 @@ if __name__ == "__main__":
     
     print(f" --------- model id: {model_id} --------- ")
     
-    model = ForecastModel(task=task,model_id = model_id,model_type=args.model,_data=dataset_data,
-        mixed_memory=args.mixed_memory,model_size=args.size,checkpoint_id=checkpoint_id)
-    if not args.optimise:
-        model.fit(epochs=args.epochs,gpus=args.gpus,optimise=args.optimise, learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,reset = args.reset)
-        model.test(iterative_forecast=args.iterative_forecast,checkpoint="last")
-        model.test(iterative_forecast=args.iterative_forecast,checkpoint="best")
+    model = ForecastModel(task=task,model_id = model_id,_data=dataset_data, checkpoint_id=checkpoint_id)
+
     
-    else:
+    if use_optuna:
         storage = optuna.storages.RDBStorage(
                 url=f"sqlite:///{task}.db",
                 engine_kwargs={"connect_args": {"timeout": 100}},
         )
         
-        pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=2) if args.pruning else optuna.pruners.NopPruner()
-        study = optuna.create_study(direction="minimize", pruner=pruner,
-                                    study_name= str(int(model_id)),
-                                    storage=storage,load_if_exists=True)
-        study.optimize(lambda trial: model.fit(trial=trial, _data=dataset_data,epochs=args.epochs,gpus=args.gpus,optimise=args.optimise,
-                                            learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss),
-                        n_trials=100)
 
+        if args.sigma == "optimise":
+            pruner = optuna.pruners.NopPruner()
+            study = optuna.create_study(direction="minimize", pruner=pruner,
+                            study_name= str(int(model_id)),sampler=optuna.samplers.BruteForceSampler(),
+                            storage=storage,load_if_exists=True)
+
+            study.optimize(lambda trial: optimise_sigma(model,args,trial),
+                            n_trials=100)
+
+        elif args.seq_len == "optimise":
+            pruner = optuna.pruners.NopPruner()
+            study = optuna.create_study(direction="minimize", pruner=pruner,
+                            study_name= str(int(model_id))+"seq_len",sampler=optuna.samplers.BruteForceSampler(),
+                            storage=storage,load_if_exists=True)
+
+            study.optimize(lambda trial: optimise_seq_len(model,args,trial),
+                            n_trials=100)
+
+        else:
+            pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=2) if args.pruning else optuna.pruners.NopPruner()
+            study = optuna.create_study(direction="minimize", pruner=pruner,
+                            study_name= str(int(model_id)),
+                            storage=storage,load_if_exists=True)
+            study.optimize(lambda trial: model.fit(trial=trial, pochs=args.epochs,gpus=args.gpus,
+                                    learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
+                                    model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size,reset = args.reset),
+                n_trials=100)
+                
         print("Number of finished trials: {}".format(len(study.trials)))
 
         print("Best trial:")
@@ -767,4 +857,8 @@ if __name__ == "__main__":
         for key, value in trial.params.items():
             print("    {}: {}".format(key, value))
 
-
+    elif not args.optimise:
+        model.fit(epochs=args.epochs,gpus=args.gpus,model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size, learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,reset = args.reset)
+        model.test(iterative_forecast=args.iterative_forecast,checkpoint="last")
+        model.test(iterative_forecast=args.iterative_forecast,checkpoint="best")
+    
