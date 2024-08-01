@@ -573,7 +573,7 @@ class ForecastModel:
                 default_hp_metric=False)
 
         self.trainer = pl.Trainer(
-            logger = tensorboard_logger,
+            logger = self.tensorboard_logger,
             max_epochs= self.epochs,
             gradient_clip_val=1,
             accelerator= 'cpu' if self.gpus is None else 'gpu',
@@ -581,8 +581,8 @@ class ForecastModel:
             callbacks=[self.checkpoint_callback],
         )
 
-        self.learn = SequenceLearner(model= self._model,loss_func = loss,lr=learning_rate,cosine_lr=cosine_lr,iterative_forecast=self.iterative_forecast,
-            _loaderfunc=self._loaderfunc,n_iterations=(self.batch_size * epochs),future = self.future,denormalize = self.denormalize)
+        self.learn = SequenceLearner(model= self._model,loss_func = self.loss,lr=self.learning_rate,cosine_lr=self.cosine_lr,iterative_forecast=self.iterative_forecast,
+            _loaderfunc=self._loaderfunc,n_iterations=(self.batch_size * self.epochs),future = self.future,denormalize = self.denormalize)
 
     def fit(self,trial=None,epochs=100,learning_rate=1e-2,cosine_lr=False,model_size =None,mixed_memory=True,model_type="ltc",gpus=None,future_loss = False,reset = False):
             self.epochs = epochs
@@ -750,14 +750,19 @@ def optimise_seq_len(model,args,trial):
         val_scores += val_score
     return val_scores / 5
 
-def optimise_model_params(model,args,trial):
+def optimise_model_params(model,dataset_data, args,trial):
     # https://github.com/optuna/optuna-examples/blob/main/pytorch/pytorch_lightning_simple.py
-    args["learning_rate"] = trial.suggest_float("learning_rate",1e-4,1e-2)
-    args["cosine_lr"] = trial.suggest_int("cosine_lr",0,1) if cosine_lr else 0
-    args["model_size"]  = trial.suggest_int("model_size",self.out_features +3,48,step=4)
-    val_score = model.fit(trial=trial,epochs=args.epochs,gpus=args.gpus,learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
-                                            model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size)
-    return val_score
+    args.learning_rate = trial.suggest_float("learning_rate",1e-4,5e-2)
+    args.cosine_lr = trial.suggest_int("cosine_lr",0,1) if args.cosine_lr else 0
+    args.model_size  = trial.suggest_int("model_size",model.out_features +3,40,step=2)
+    val_scores = 0
+    for cross_val_fold in range(5):
+        print(f"--- fold {cross_val_fold} ---")
+        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
+        model.set_data(dataset_data)
+        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
+        val_scores += val_score
+    return val_scores / 5
 
 def set_data_and_fit(dataset_data,model,args,trial):
     model.set_data(dataset_data)
@@ -816,18 +821,18 @@ if __name__ == "__main__":
                 url=f"sqlite:///{task}.db",
                 engine_kwargs={"connect_args": {"timeout": 100}},
         )
-        study_name= str(int(model_id))+"seq_len"
+        study_name= str(int(model_id))
         if args.sigma == "optimise" or args.seq_len == "optimise":
             pruner = optuna.pruners.NopPruner()
             sampler=optuna.samplers.BruteForceSampler()
             if args.seq_len == "optimise":
                 study_name= str(int(model_id))+"seq_len"
         else:
-            pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=2) if args.pruning else optuna.pruners.NopPruner()
-            sampler = optuna.samplers.TPESampler
+            pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=4) if args.pruning else optuna.pruners.NopPruner()
+            sampler = optuna.samplers.TPESampler()
 
         study = optuna.create_study(direction="minimize", pruner=pruner,
-                        study_name= study_name,
+                        study_name= study_name,sampler=sampler,
                         storage=storage,load_if_exists=True)
 
         if args.sigma == "optimise":
@@ -839,9 +844,7 @@ if __name__ == "__main__":
                             n_trials=100)
 
         else:
-            study.optimize(lambda trial: model.fit(trial=trial, pochs=args.epochs,gpus=args.gpus,
-                                    learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
-                                    model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size,reset = args.reset),
+            study.optimize(lambda trial: optimise_model_params(model,dataset_data,args,trial),
                 n_trials=100)
                 
         print("Number of finished trials: {}".format(len(study.trials)))

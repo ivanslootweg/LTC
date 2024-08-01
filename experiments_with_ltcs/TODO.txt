@@ -30,7 +30,7 @@ Model fitting
         cross validation for sigma              running 31 07
         cross validation for sequence length    running 31 07
         implement cross validation              done. 31.07
-        cross validation for model params       queue(2). run after decision on sigma and sequence length
+        cross validation for model params       queue(2). re-run after decision on sigma and sequence length. now running with (7,32)　on ponyland
 
 Model implementation
         predict more timestaps ahead            experimented with 2 timesteps  

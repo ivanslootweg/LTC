@@ -202,22 +202,6 @@ class RealtimeForecastModel(ForecastModel):
         self.predict_neg_history = torch.full((self.n_forecasts,self.in_features-1),0)
 
 
-        # self.fig,self.axes = plt.subplots(int(self.out_features/2), 2, figsize=(30,10*self.out_features),constrained_layout=True)
-        # self.axes = self.axes.ravel()
-
-        # self.lines = []
-        # for feat_nr, ax in enumerate(self.axes):
-        #     ax.set_ylim(-0.1,None) 
-        #     ax.set_xlim(0,64)
-        #     line_pos, = ax.plot([], [], lw=0.5, label="With activation",linestyle= '--',alpha = 0.5)
-        #     line_neg, = ax.plot([], [], lw=0.5, label="No activation",linestyle= '--',alpha = 0.5)
-        #     line_rec, = ax.plot([], [], lw=0.5, label="Recording",alpha = 0.5)
-        #     self.lines.append((line_pos, line_neg, line_rec))
-        #     ax.legend(loc='upper right')
-
-        # self.ani = FuncAnimation(self.fig, self.update_plot, interval=500,save_count=20) #run in main thread
-        # plt.show()
-
     def run(self,recording_id,gpus,pipe_connection,plot_sender,model_size,mixed_memory,model_type):  
         self.model_size = model_size
         self.mixed_memory = mixed_memory
@@ -237,25 +221,6 @@ class RealtimeForecastModel(ForecastModel):
         self.predict()
 
 
-    def update_plot(self, *args):
-        print("updating")
-        plot_length = min(100, self.total_read_timesteps)
-        if plot_length == 0:
-            return self.lines  # No data to plot yet
-
-        plot_pos = self.predict_pos_history[-(plot_length+self.n_forecasts):].numpy()
-        plot_neg = self.predict_neg_history[-(plot_length+self.n_forecasts):].numpy()
-        history = self.recorded_history[-plot_length:].numpy()
-        print("plotting now: ", history.shape, plot_pos.shape,plot_neg.shape,flush=True)
-        for i, (line_pos, line_neg, line_rec) in enumerate(self.lines):
-            line_pos.set_data(range(plot_pos.shape[0]), plot_pos[:, i])
-            line_neg.set_data(range(plot_neg.shape[0]), plot_neg[:, i])
-            line_rec.set_data(range(history.shape[0]), history[:, i])
-            self.axes[i].relim()
-        # self.axes[i].autoscale_view()
-
-        # plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
-
 
     def predict(self):
         self.device = next(self._model.parameters()).device
@@ -265,6 +230,7 @@ class RealtimeForecastModel(ForecastModel):
         while True:
             # with self.data_condition:
             #     self.data_condition.wait()
+            _start = dt.datetime.now()
             if  not self.pipe_connection.poll():
                 continue
             in_x, in_x_de = self.pipe_connection.recv()
@@ -290,7 +256,6 @@ class RealtimeForecastModel(ForecastModel):
             in_x = self.norm_recorded_history[:,-self.seq_len:,:]
             x_pos = x_neg = in_x # (1,seq_len,neurons)
             y_hat_pos = y_hat_neg  = torch.empty((1,self.n_iterative_forecasts,in_x.shape[-1]), device=self.device)
-            _start = dt.datetime.now()
             for i in range(self.n_iterative_forecasts):
                 """we only add a 1 for laser activation at the 2 direct following bin, no  other bins"""
                 x_pos_in = torch.cat((x_pos,torch.full((1,32,1),1 if i < 2 else 0,device=self.device)),dim=-1)
@@ -322,8 +287,7 @@ class RealtimeForecastModel(ForecastModel):
             self.plot_sender.send((plot_length,
                     self.predict_pos_history[-(plot_length+self.n_forecasts):],self.predict_neg_history[-(plot_length+self.n_forecasts):], 
                     self.recorded_history[-plot_length:]))
-            # self.update_plot()
-            # plt.draw()
+
 
 def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,plot_sender,args):
     dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
@@ -333,10 +297,6 @@ def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,ite
 
 
 def main_update_plot(plot_listener,fig,axes,lines):
-    # if not plot_listener.poll():
-    #     return (fig,axes,lines)
-    # else:
-    #     print(True)
     plot_length,  predict_pos_history,predict_neg_history , recorded_history = plot_listener.recv()
     if plot_length == 0:
         return (fig,axes,lines)  # No data to plot yet
@@ -355,7 +315,6 @@ def main_update_plot(plot_listener,fig,axes,lines):
 
     fig.canvas.draw()
     fig.canvas.flush_events()
-    # plt.show(ti)
     return (fig,axes,lines)
 
 if __name__ == "__main__":
@@ -393,21 +352,21 @@ if __name__ == "__main__":
 
     plot_listener, plot_sender = Pipe()
 
-    fig,axes = plt.subplots(int(dataset_data.out_features/2), 2, figsize=(30,10*dataset_data.out_features),constrained_layout=True)
-    axes = axes.ravel()
+    # fig,axes = plt.subplots(int(dataset_data.out_features/2), 2, figsize=(30,10*dataset_data.out_features),constrained_layout=True)
+    # axes = axes.ravel()
 
-    lines = []
-    for feat_nr, ax in enumerate(axes):
-        ax.set_ylim(-0.1,None) 
-        ax.set_xlim(0,64)
-        line_pos, = ax.plot([], [], lw=1, linestyle="-", alpha =0.5,label="With activation")
-        line_neg, = ax.plot([], [], lw=1, linestyle="--",alpha =0.5,  label="No activation")
-        line_rec, = ax.plot([], [], lw=1, linestyle="--", alpha =0.5,label="Recording")
-        lines.append((line_pos, line_neg, line_rec))
-        ax.legend(loc='upper right')
+    # lines = []
+    # for feat_nr, ax in enumerate(axes):
+    #     ax.set_ylim(-0.1,None) 
+    #     ax.set_xlim(0,64)
+    #     line_pos, = ax.plot([], [], lw=1, linestyle="-", alpha =0.5,label="With activation")
+    #     line_neg, = ax.plot([], [], lw=1, linestyle="--",alpha =0.5,  label="No activation")
+    #     line_rec, = ax.plot([], [], lw=1, linestyle="--", alpha =0.5,label="Recording")
+    #     lines.append((line_pos, line_neg, line_rec))
+    #     ax.legend(loc='upper right')
 
-    plt.show(block=False)
-    print("prepared plot")
+    # plt.show(block=False)
+    # print("prepared plot")
 
     processes = [] 
     data_observer = Observer()
@@ -416,14 +375,6 @@ if __name__ == "__main__":
     data_handler = PauseDataHandler(recording_id,dataset_data.prepare_realtime_data)
     data_observer.schedule(data_handler, path=f"recordings/{recording_id}", recursive=False)   
     data_observer.start()
-
-    # dummy_data_thread = threading.Thread(target=create_dummy_data, args=(recording_id,))
-    # dummy_data_thread.daemon = True
-    # dummy_data_thread.start()
-
-    # predict_thread = threading.Thread(target=self.predict)
-    # predict_thread.daemon = True
-    # predict_thread.start()
 
     dummy_data_process = multiprocessing.Process(target=create_dummy_data, args=(recording_id,))    
     dummy_data_process.start()
@@ -437,8 +388,9 @@ if __name__ == "__main__":
 
     try:
         while True:
-            fig,ax, lines = main_update_plot(plot_listener,fig,axes,lines)
-            plt.pause(0.1)
+        #     fig,ax, lines = main_update_plot(plot_listener,fig,axes,lines)
+        #     plt.pause(0.1)
+            pass
     except KeyboardInterrupt:
         plt.close('all')
         data_observer.stop()

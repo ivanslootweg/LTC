@@ -56,6 +56,9 @@ python forecast.py --size 36 --epochs 200 --gpus 1 --initial_lr 0.022 --dataset 
 
 Comparisons
 
+new hyperparam tuning
+1/5         0.05    53      1                                                       80104           sigma 7 seq len 32 10-0/1, 13-0, 3-0
+
 FUTURE      LOSS        INCREMENTAL         ID
 5           ALL         -                   2206
 5           FUTURE      -                   2205
