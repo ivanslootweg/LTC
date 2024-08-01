@@ -816,31 +816,29 @@ if __name__ == "__main__":
                 url=f"sqlite:///{task}.db",
                 engine_kwargs={"connect_args": {"timeout": 100}},
         )
-        
+        study_name= str(int(model_id))+"seq_len"
+        if args.sigma == "optimise" or args.seq_len == "optimise":
+            pruner = optuna.pruners.NopPruner()
+            sampler=optuna.samplers.BruteForceSampler()
+            if args.seq_len == "optimise":
+                study_name= str(int(model_id))+"seq_len"
+        else:
+            pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=2) if args.pruning else optuna.pruners.NopPruner()
+            sampler = optuna.samplers.TPESampler
+
+        study = optuna.create_study(direction="minimize", pruner=pruner,
+                        study_name= study_name,
+                        storage=storage,load_if_exists=True)
 
         if args.sigma == "optimise":
-            pruner = optuna.pruners.NopPruner()
-            study = optuna.create_study(direction="minimize", pruner=pruner,
-                            study_name= str(int(model_id)),sampler=optuna.samplers.BruteForceSampler(),
-                            storage=storage,load_if_exists=True)
-
             study.optimize(lambda trial: optimise_sigma(model,args,trial),
-                            n_trials=100)
+                        n_trials=100)
 
         elif args.seq_len == "optimise":
-            pruner = optuna.pruners.NopPruner()
-            study = optuna.create_study(direction="minimize", pruner=pruner,
-                            study_name= str(int(model_id))+"seq_len",sampler=optuna.samplers.BruteForceSampler(),
-                            storage=storage,load_if_exists=True)
-
             study.optimize(lambda trial: optimise_seq_len(model,args,trial),
                             n_trials=100)
 
         else:
-            pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=2) if args.pruning else optuna.pruners.NopPruner()
-            study = optuna.create_study(direction="minimize", pruner=pruner,
-                            study_name= str(int(model_id)),
-                            storage=storage,load_if_exists=True)
             study.optimize(lambda trial: model.fit(trial=trial, pochs=args.epochs,gpus=args.gpus,
                                     learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
                                     model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size,reset = args.reset),
