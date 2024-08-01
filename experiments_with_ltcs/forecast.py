@@ -98,7 +98,9 @@ def cut_in_sequences(x,seq_len,inc=1,prognosis=1):
 
 class DataBaseClass:
     def __init__(self):
-        self.load_data()
+        pass
+
+    def normalize_data(self):
         dataset_names = ["train_x","train_y","valid_x", "valid_y","test_x","test_y","test_plot_x","test_plot_y"]
         train_with_noise = False
         for _name in dataset_names:
@@ -108,9 +110,9 @@ class DataBaseClass:
             if "train" in _name and train_with_noise:
                 noise = np.random.normal(0, 0.1, _array.shape)   
                 _array = _array + noise
-                setattr(self,_name, _array)
                 print(f"{_name} post noise: ",str(_array.mean()))              
-
+            setattr(self,_name, _array)
+            
         self.in_features = self.train_x.shape[2]
         self.out_features = self.train_y.shape[2]
 
@@ -280,24 +282,32 @@ class CheetahData(DataBaseClass):
         return np.stack(all_x,axis=1),np.stack(all_y,axis=1)
 
 class NeuronData(DataBaseClass):
-    def __init__(self,binwidth=0.05,seq_len=32,future=1,iterative_forecast=False,batch_size=16,cross_val_fold=None):
-        self.seq_len = seq_len
+    def __init__(self,binwidth=0.05,sigma=7,seq_len=32,future=1,iterative_forecast=False,batch_size=16,cross_val_fold=None):
+        self.seq_len = int(seq_len)
         self.batch_size = batch_size
+        self.binwidth = binwidth
         self.future = future
         self.iterative_forecast = iterative_forecast
+        self.sigma = sigma
         self.n_iterative_forecasts = 0
-        self.cross_val_fold = cross_val_fold
         if self.iterative_forecast:
             self.n_iterative_forecasts = future
             self.future = 1
+        self.n_forecasts = max(self.future,self.n_iterative_forecasts)
         """ 
         x: (Neurons,T) -> transpose to (T,Neurons)
         train_x after cut : (N_sequences) * (seq_len,Neurons)
         after stack (after make sequences):  (seq_len,N_sequences,T,Neurons)
         """
-        if binwidth == 0.05:
-            x = np.load("data/neurons/activations_ADL1_2023-10-24_22-40-25.npy")
-        elif binwidth == 0.5:
+        super().__init__()
+        self.load_data()
+        self.set_kfold_splits()
+        
+    def load_data(self, cross_val_fold=None):
+        self.cross_val_fold = cross_val_fold
+        if self.binwidth == 0.05:
+            x = np.load(f"data/neurons/activations_ADL1_2023-10-24_22-40-25=s{self.sigma}.npy")
+        elif self.binwidth == 0.5:
             x = np.load("data/neurons/activations_f0.5_w1.0.npy")
         x = x.astype(np.float32)
         x = np.transpose(x)
@@ -306,8 +316,8 @@ class NeuronData(DataBaseClass):
         self.valid_chunk,self.test_chunk, self.train_chunk = self.train_test_split(x)
         self.increment = max(int(x.shape[0] / 1000),2)
         self.make_sequences()         
-        self.feature_labels = self.feature_labels = [f"neuron {i}" for i in range(self.train_y.shape[2])]
-        super().__init__()
+        self.feature_labels = [f"neuron {i}" for i in range(self.train_y.shape[2])]
+        self.normalize_data()
 
     def make_sequences(self):
         # cut the data into x and y sequences
@@ -339,6 +349,11 @@ class NeuronData(DataBaseClass):
                 setattr(self,f"predict_x",temp_x)    
                 setattr(self,f"predict_y",temp_y)  
 
+        print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
+        kf = KFold(n_splits=5,shuffle=False)
+        self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
+  
+    def set_kfold_splits(self):
         print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
         kf = KFold(n_splits=5,shuffle=False)
         self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
@@ -384,7 +399,7 @@ class NeuronData(DataBaseClass):
         return (val_data, test_data,train_data)  
     
 class NeuronLaserData(DataBaseClass):
-    def __init__(self,binwidth=0.05,sigma=5,seq_len=32,future=1,iterative_forecast=False,batch_size=16):
+    def __init__(self,binwidth=0.05,sigma=7,seq_len=32,future=1,iterative_forecast=False,batch_size=16):
         self.seq_len = int(seq_len)
         self.batch_size = batch_size
         self.binwidth = binwidth
@@ -403,6 +418,7 @@ class NeuronLaserData(DataBaseClass):
         after stack (after make sequences):  (seq_len,N_sequences,T,Neurons)
         """
         super().__init__()
+        self.load_data()
         self.set_kfold_splits()
 
     def load_data(self, cross_val_fold=None):
@@ -425,6 +441,7 @@ class NeuronLaserData(DataBaseClass):
         self.increment = max(int(x.shape[0] / 1000),2)
         self.make_sequences()   
         self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
+        self.normalize_data()
 
     def make_sequences(self):
         # cut the data into x and y sequences
