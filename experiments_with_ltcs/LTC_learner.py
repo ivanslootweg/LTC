@@ -20,14 +20,16 @@ class SequenceLearner(pl.LightningModule):
             setattr(self,k,v)
         self.save_hyperparameters(ignore=["model","_loaderfunc","loss_func","denormalize"])   
     
+
     def train_dataloader(self):
         # return self.train_dataloader
         return self._loaderfunc(subset="train")
+    
 
     def val_dataloader(self):
         # return self.val_dataloader
         return self._loaderfunc(subset="valid")
-    
+
     def test_dataloader(self):
         # return self.test_dataloader
         return self._loaderfunc(subset="test")
@@ -39,7 +41,7 @@ class SequenceLearner(pl.LightningModule):
         loss = self.loss_func(y_hat, y)
         mae = torch.mean( torch.abs(y-y_hat))
         self.log("train_loss", loss, prog_bar=True)
-        self.log("train_mae", mae, prog_bar=True)
+        self.log("train_mae", mae, prog_bar=False)
         return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
@@ -49,7 +51,7 @@ class SequenceLearner(pl.LightningModule):
         loss = self.loss_func(y_hat, y)
         mae = torch.mean(torch.abs(y-y_hat))
         self.log("val_loss", loss, prog_bar=True)
-        self.log("val_mae",mae,prog_bar=True)
+        self.log("val_mae",mae,prog_bar=False)
         # self.log_dict({
         #     "accuracy":accuracy,
         #     "loss": loss})
@@ -104,39 +106,44 @@ class SequenceLearner(pl.LightningModule):
         
 
 class ScheduledSamplingSequenceLearner(SequenceLearner):
-    def __init__(self, sampling_probability, **kwargs):
-        super().__init__(kwargs)
-        self.sampling_probability = sampling_probability
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def training_step(self, batch, batch_idx):
+        p = 0.8 - 0.7*(self.current_epoch / self.trainer.max_epochs)  # Linearly decreasing. start at 0.8 and end at 0.1
         x, y = batch
-        if np.random.rand() < self.sampling_probability:
-            y_hat, _ = self.model.forward(x)
-            self.y_hat = torch.cat(x[:,1:],y_hat[:,:1],dim=0)
-            y_hat = y_hat.view_as(y)
-            loss = self.loss_func(y_hat, y)
-            mae = torch.mean( torch.abs(y-y_hat))
-            self.log("train_loss", loss, prog_bar=True)
-            self.log("train_mae", mae, prog_bar=True)
-        return {"loss": loss}
-
-        if np.random.rand() < self.sampling_probability:
-            # Use model's prediction as the next input
-            next_input = model.predict(current_input[np.newaxis, :, :])
+        y_hat = torch.empty_like(y)
+        input_x = x[:1]
+        if torch.rand(1) > p:
+            for i in range(self.n_iterative_forecasts):
+                if i > 0:
+                    # take the timestep inputs from pred
+                    # take the laser inputs from x : from the last ti
+                    laser_value = x[i,-1,-1]
+                    predicted_x = torch.cat((predicted[:, -1:, :], torch.full((1,1,1),laser_value,device = predicted.device)), dim=2)
+                    input_x = torch.cat((input_x[:, 1:, :], predicted_x), dim=1) #input for next prediction
+                predicted, _ = self.model.forward(input_x)
+                y_hat[i] = predicted[0]
+            pred, _ = self.model.forward(x[self.n_iterative_forecasts:])
+            y_hat[self.n_iterative_forecasts:] = pred
         else:
-            # Use the actual next value as the next input
-            next_input = current_target[t]
-        current_input = np.append(current_input[1:], next_input).reshape(-1, 1)
-        
-        # Train on the current sequence
-        model.train_on_batch(current_input[np.newaxis, :, :], current_target[t])
-
-
-
-        y_hat, _ = self.model.forward(x)
-        y_hat = y_hat.view_as(y)
+            y_hat, _ = self.model.forward(x)
+            y_hat = y_hat.view_as(y)
         loss = self.loss_func(y_hat, y)
         mae = torch.mean( torch.abs(y-y_hat))
         self.log("train_loss", loss, prog_bar=True)
-        self.log("train_mae", mae, prog_bar=True)
+        self.log("train_mae", mae, prog_bar=False)
         return {"loss": loss}
+ 
+    def configure_optimizers(self):
+        optimizer =  torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        if self.cosine_lr:
+            for param_group in optimizer.param_groups:
+                if 'initial_lr' not in param_group:
+                    param_group['initial_lr'] = self.lr
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max =self.n_iterations ,eta_min=self.lr/20)
+            }
+        else:
+            return optimizer 

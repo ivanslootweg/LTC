@@ -1,0 +1,180 @@
+import argparse
+import datetime as dt
+import os
+import optuna
+
+from modules import CheetahData, TrafficData, OccupancyData, NeuronData, NeuronLaserData
+from modules import ForecastModel
+import torch
+torch.set_float32_matmul_precision('medium')
+
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
+
+
+data_classes = {
+    "cheetah": CheetahData,
+    "traffic": TrafficData,
+    "occupancy": OccupancyData,
+    "neurons": NeuronData,
+    "neuronlaser": NeuronLaserData
+}
+
+study_names = {
+    "cheetah":2024070307,
+    "occupancy":20240626131851
+}
+
+def optimise_sigma(model,args,trial):
+    sigma = trial.suggest_int("sigma",1,8)
+    some_data_class = data_classes[args.dataset]
+    val_scores = 0
+    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len,iterative_forecast=args.iterative_forecast,sigma=sigma)
+    for cross_val_fold in range(5):
+        print(f"--- fold {cross_val_fold} ---")
+        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
+        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
+        val_scores += val_score
+    return val_scores / 5
+
+def optimise_lr(model,dataset_data, args,trial):
+    args.lr = trial.suggest_float("learning_rate",1e-4,5e-2)
+    val_scores = 0
+    for cross_val_fold in range(5):
+        print(f"--- fold {cross_val_fold} ---")
+        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
+        model.set_data(dataset_data)
+        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
+        val_scores += val_score
+    return val_scores / 5
+
+def optimise_seq_len(model,args,trial):
+    seq_len = trial.suggest_discrete_uniform("seq_len",32,80,16)
+    some_data_class = data_classes[args.dataset]
+    val_scores = 0
+    dataset_data = some_data_class(future=args.future,seq_len=seq_len,iterative_forecast=args.iterative_forecast,sigma=args.sigma)
+    for cross_val_fold in range(5):
+        print(f"--- fold {cross_val_fold} ---")
+        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
+        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
+        val_scores += val_score
+    return val_scores / 5
+
+def optimise_model_params(model,dataset_data, args,trial):
+    # https://github.com/optuna/optuna-examples/blob/main/pytorch/pytorch_lightning_simple.py
+    args.lr = trial.suggest_float("learning_rate",1e-4,5e-2)
+    args.cosine_lr = trial.suggest_int("cosine_lr",0,1) if args.cosine_lr else 0
+    args.model_size  = trial.suggest_int("model_size",model.out_features +3,40,step=2)
+    val_scores = 0
+    for cross_val_fold in range(5):
+        print(f"--- fold {cross_val_fold} ---")
+        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
+        model.set_data(dataset_data)
+        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
+        val_scores += val_score
+    return val_scores / 5
+
+def set_data_and_fit(dataset_data,model,args,trial=None):
+    model.set_data(dataset_data)
+    val_score = model.fit(trial=trial,epochs=args.epochs,gpus=args.gpus,learning_rate=args.lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
+                                            model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size)
+    return val_score
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model',default="ltc")
+    parser.add_argument('--size',default=32,type=int)
+    parser.add_argument('--mixed_memory',action='store_true')
+    parser.add_argument('--epochs',default=200,type=int)
+    parser.add_argument('--gpus', nargs='+', type=int,default = None)    
+    parser.add_argument('--lr',default=0.02,type=str)
+    parser.add_argument('--cosine_lr',action='store_true')
+    parser.add_argument('--dataset',default="cheetah",type=str) 
+    parser.add_argument('--seq_len',default=32,type=str)
+    parser.add_argument('--future',default=1,type=int)
+    parser.add_argument('--iterative_forecast',action='store_true')
+    parser.add_argument('--optimise',action='store_true')
+    parser.add_argument('--pruning',action='store_true')
+    parser.add_argument('--model_id_shift',type=int,default=0)
+    parser.add_argument('--future_loss',action='store_true')
+    parser.add_argument('--binwidth',default =0.05, type= float)
+    parser.add_argument('--model_id',default =0, type= int)
+    parser.add_argument('--sigma',default =7, type= str)
+    parser.add_argument('--checkpoint_id',default =0, type= int)
+    parser.add_argument('--reset',action='store_true')
+    parser.add_argument('--scheduled_sampling',action='store_true')
+
+    args = parser.parse_args()
+    use_optuna = (args.sigma == "optimise" or args.optimise or args.seq_len == "optimise" or args.lr == "optimise")
+
+    assert args.future > 0 , "Future should be > 0"
+    some_data_class = data_classes[args.dataset]
+    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len if args.seq_len != "optimise" else 32,binwidth=args.binwidth,
+        iterative_forecast=args.iterative_forecast,sigma=args.sigma if args.sigma != "optimise" else 7,scheduled_sampling = args.scheduled_sampling)
+    task = args.dataset + "_forecast"
+    checkpoint_id = None
+    if not args.model_id:
+        model_id = str(int(dt.datetime.today().strftime("%Y%m%d%H"))  + args.model_id_shift)
+    else:
+        model_id = args.model_id
+    if args.checkpoint_id :# we copy checkpoint to new model
+        checkpoint_id = args.checkpoint_id
+
+    
+    print(f" --------- model id: {model_id} --------- ")
+    
+    model = ForecastModel(task=task,model_id = model_id,_data=dataset_data, checkpoint_id=checkpoint_id)
+
+    
+    if use_optuna:
+        storage = optuna.storages.RDBStorage(
+                url=f"sqlite:///{task}.db",
+                engine_kwargs={"connect_args": {"timeout": 100}},
+        )
+        study_name= str(int(model_id))
+        if args.sigma == "optimise" or args.seq_len == "optimise":
+            pruner = optuna.pruners.NopPruner()
+            sampler=optuna.samplers.BruteForceSampler()
+            if args.seq_len == "optimise":
+                study_name= str(int(model_id))+"seq_len"
+        else:
+            pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=4) if args.pruning else optuna.pruners.NopPruner()
+            sampler = optuna.samplers.TPESampler()
+
+        if args.reset:
+            optuna.delete_study(study_name= study_name,storage=storage,)
+        study = optuna.create_study(direction="minimize", pruner=pruner,
+                        study_name= study_name,sampler=sampler,
+                        storage=storage,load_if_exists=True)
+
+        if args.sigma == "optimise":
+            study.optimize(lambda trial: optimise_sigma(model,args,trial),
+                        n_trials=100)
+
+        elif args.seq_len == "optimise":
+            study.optimize(lambda trial: optimise_seq_len(model,args,trial),
+                            n_trials=100)
+        elif args.lr == "optimise":
+            study.optimize(lambda trial: optimise_lr(model,dataset_data,args,trial),
+                n_trials=100)
+        else:
+            study.optimize(lambda trial: optimise_model_params(model,dataset_data,args,trial),
+                n_trials=100)
+                
+        print("Number of finished trials: {}".format(len(study.trials)))
+
+        print("Best trial:")
+        trial = study.best_trial
+
+        print("  Value: {}".format(trial.value))
+
+        print("  Params: ")
+        for key, value in trial.params.items():
+            print("    {}: {}".format(key, value))
+
+    elif not args.optimise:
+        model.fit(epochs=args.epochs,gpus=args.gpus,model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size, learning_rate=args.lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,reset = args.reset)
+        model.test(iterative_forecast=args.iterative_forecast,checkpoint="last")
+        model.test(iterative_forecast=args.iterative_forecast,checkpoint="best")
+    

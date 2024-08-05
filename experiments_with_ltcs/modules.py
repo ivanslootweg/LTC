@@ -2,42 +2,53 @@ import numpy as np
 import pandas as pd
 import os
 import matplotlib.pyplot as plt
-from tqdm import tqdm
-import logging
-import sys
-import argparse
 import datetime as dt
-from datetime import timedelta
-import time
 import multiprocessing
-from functools import partial
+import abc
 
 from ncps.torch import LTC
-from ncps.wirings import AutoNCP, FullyConnected
+from ncps.wirings import FullyConnected
 
 from sklearn.model_selection import KFold
 
-
-from LTC_learner import SequenceLearner
-from load_data import load_training_data
+from LTC_learner import SequenceLearner,ScheduledSamplingSequenceLearner
 
 import torch
 import torch.nn as nn
-import torch.utils.data as data
+from torch.utils.data import TensorDataset, DataLoader, BatchSampler, SequentialSampler
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-
-import optuna
 from optuna.integration import PyTorchLightningPruningCallback
 
-from concurrent.futures import ThreadPoolExecutor
+class BatchShuffleSampler(BatchSampler):
+    def __init__(self, sampler, batch_size, drop_last):
+        super().__init__(sampler, batch_size, drop_last)
+        self.sampler = sampler
+        self.batch_size = batch_size
+        self.drop_last = drop_last
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
+    def __iter__(self):
+        # Get all indices from the sampler
+        indices = list(self.sampler)
+        # Calculate the number of batches
+        num_batches = len(indices) // self.batch_size
+        if not self.drop_last:
+            num_batches += 1 if len(indices) % self.batch_size != 0 else 0
 
+        # Create batch indices
+        # batch_indices = [indices[batch_start,batch_start+self.batch_size] for batch_start in range(0,indices,self.batch_size)]
+        batch_indices = [indices[i*self.batch_size:(i+1)*self.batch_size] for i in range(num_batches)]
+        # Shuffle the order of batches, not the data within batches
+        np.random.shuffle(batch_indices)
+
+        # Flatten the list of batch indices
+        shuffled_indices = [batch for batch in batch_indices]
+        return iter(shuffled_indices)
+
+    def __len__(self):
+        return len(self.sampler) // self.batch_size if self.drop_last else (len(self.sampler) + self.batch_size - 1) // self.batch_size
 
 class NMSELoss(nn.Module):
     def __init__(self):
@@ -97,9 +108,9 @@ def cut_in_sequences(x,seq_len,inc=1,prognosis=1):
     return sequences_x,sequences_y
 
 class DataBaseClass:
-    def __init__(self):
-        pass
+    __metaclass__ = abc.ABCMeta
 
+    @abc.abstractmethod 
     def normalize_data(self):
         dataset_names = ["train_x","train_y","valid_x", "valid_y","test_x","test_y","test_plot_x","test_plot_y"]
         train_with_noise = False
@@ -116,6 +127,8 @@ class DataBaseClass:
         self.in_features = self.train_x.shape[2]
         self.out_features = self.train_y.shape[2]
 
+
+    @abc.abstractmethod 
     def get_dataloader(self,subset="train"):
         """ We create dataloader with content of shapes [batch size,series_length,features]
         permute x and y data because [series_length, n_series, features]
@@ -129,15 +142,39 @@ class DataBaseClass:
             return self.normalize(np.expand_dims(self.predict_x,0),"x"), self.predict_x 
         
         assert (subset) in ["train","valid","test","test_plot"]
-        x_data = torch.permute(torch.tensor(getattr(self,f"{subset}_x")),(1,0,2)) # _batch = (B_size, Timesteps, Features)
-        y_data = torch.permute(torch.tensor(getattr(self,f"{subset}_y")),(1,0,2))
-        return data.DataLoader(
-            data.TensorDataset(x_data, y_data),
-            batch_size =  self.n_forecasts if subset == "test_plot" and self.iterative_forecast else self.batch_size,
-            shuffle=True if subset == "train" else False,
-            num_workers = 1 if subset == "test_plot" else 4,
-        )
+        x_data = torch.permute(getattr(self,f"{subset}_x"),(1,0,2)) # _batch = (B_size, Timesteps, Features)
+        y_data = torch.permute(getattr(self,f"{subset}_y"),(1,0,2))
+        dataset = TensorDataset(x_data, y_data)
 
+        num_workers = 4
+        if self.scheduled_sampling and "train" in subset:
+            sequential_sampler = SequentialSampler(dataset)
+            batch_sampler = BatchShuffleSampler(sequential_sampler,batch_size=self.batch_size, drop_last=False)
+            batch_size = None
+
+            return DataLoader(
+                dataset = dataset,
+                batch_sampler= batch_sampler,
+                num_workers = num_workers
+            )
+        else:
+            shuffle = False
+            batch_size = self.batch_size
+            if subset == "train":
+                shuffle = True
+            if subset == "test_plot" and self.iterative_forecast:
+                batch_size = self.n_forecasts 
+                num_workers = 1
+
+            return DataLoader(
+                shuffle = shuffle,
+                dataset = dataset,
+                batch_size =  batch_size,
+                num_workers = num_workers
+            )
+
+
+    @abc.abstractmethod 
     def normalize(self, tensor,values="x"):
         tensor = torch.tensor(tensor)
         if not hasattr(self,"std") or not hasattr(self,"mean"):
@@ -152,8 +189,52 @@ class DataBaseClass:
             del res
         return (tensor - self.mean[values][...,:tensor.shape[-1]]) / self.std[values][...,:tensor.shape[-1]]
 
+
+    @abc.abstractmethod 
     def denormalize(self,tensor,values="x"):
         return tensor * self.std[values][...,:tensor.shape[-1]] + self.mean[values][...,:tensor.shape[-1]]
+
+
+    @abc.abstractmethod 
+    def make_sequences(self):
+        # cut the data into x and y sequences
+        dataset_splits = ["train","valid","test"]
+        for _split in dataset_splits:
+            _array = getattr(self,f"{_split}_chunk")
+            if _split == "train":
+                temp_x = []
+                temp_y = []
+                for _arr in _array:
+                    try:
+                        temp_x_arr,temp_y_arr = cut_in_sequences(_arr,seq_len=self.seq_len, inc=self.increment ,prognosis=self.future)
+                    except Exception as e:
+                        print(e)
+                    temp_x.extend(temp_x_arr) # (N sequences, 32, N neurons)
+                    temp_y.extend(temp_y_arr)
+            else:
+                temp_x,temp_y = cut_in_sequences(_array,seq_len=self.seq_len, inc=self.increment if not _split == "test" else 1,prognosis=self.future)
+            temp_x = np.stack(temp_x, axis=1) 
+            temp_y = np.stack(temp_y, axis=1)[:,:,:-1]
+            setattr(self,f"{_split}_x",temp_x)    
+            setattr(self,f"{_split}_y",temp_y)
+            if _split == "test" :
+                # in case of iterative forecast:
+                # every batch contains 5 sequences of (x,y) we need the y's for reference and for x we will append the first batch item with model predictions 
+                # prognosis (=future) is always 1
+                # otherwise: 
+                #   prognosis = future. the data to plot will be composed of the predicted items. (hence the increment)
+                temp_x,temp_y = cut_in_sequences(_array,seq_len=self.seq_len, inc=self.future,prognosis=self.future)
+                temp_x = np.stack(temp_x, axis=1) 
+                temp_y = np.stack(temp_y, axis=1)[:,:,:-1]
+                setattr(self,f"test_plot_x",temp_x)    
+                setattr(self,f"test_plot_y",temp_y)  
+
+
+    @abc.abstractmethod 
+    def set_kfold_splits(self):
+        print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
+        kf = KFold(n_splits=5,shuffle=False)
+        self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
 
 class TrafficData(DataBaseClass):
     def __init__(self,seq_len=32,future=1,batch_size=16):
@@ -282,7 +363,7 @@ class CheetahData(DataBaseClass):
         return np.stack(all_x,axis=1),np.stack(all_y,axis=1)
 
 class NeuronData(DataBaseClass):
-    def __init__(self,binwidth=0.05,sigma=7,seq_len=32,future=1,iterative_forecast=False,batch_size=16,cross_val_fold=None):
+    def __init__(self,binwidth=0.05,sigma=7,seq_len=32,future=1,iterative_forecast=False,batch_size=16,cross_val_fold=None,scheduled_sampling=False):
         self.seq_len = int(seq_len)
         self.batch_size = batch_size
         self.binwidth = binwidth
@@ -290,6 +371,7 @@ class NeuronData(DataBaseClass):
         self.iterative_forecast = iterative_forecast
         self.sigma = sigma
         self.n_iterative_forecasts = 0
+        self.scheduled_sampling = scheduled_sampling
         if self.iterative_forecast:
             self.n_iterative_forecasts = future
             self.future = 1
@@ -300,9 +382,9 @@ class NeuronData(DataBaseClass):
         after stack (after make sequences):  (seq_len,N_sequences,T,Neurons)
         """
         super().__init__()
-        self.load_data()
+        self.load_data(cross_val_fold)
         self.set_kfold_splits()
-        
+
     def load_data(self, cross_val_fold=None):
         self.cross_val_fold = cross_val_fold
         if self.binwidth == 0.05:
@@ -318,45 +400,6 @@ class NeuronData(DataBaseClass):
         self.make_sequences()         
         self.feature_labels = [f"neuron {i}" for i in range(self.train_y.shape[2])]
         self.normalize_data()
-
-    def make_sequences(self):
-        # cut the data into x and y sequences
-        dataset_splits = ["train","valid","test"]
-        for _split in dataset_splits:
-            _array = getattr(self,f"{_split}_chunk")
-            if _split == "train":
-                temp_x = []
-                temp_y = []
-                for _arr in _array:
-                    try:
-                        temp_x_arr,temp_y_arr = cut_in_sequences(_arr,seq_len=self.seq_len, inc=self.increment ,prognosis=self.future)
-                    except Exception as e:
-                        print(e)
-                    temp_x.extend(temp_x_arr)
-                    temp_y.extend(temp_y_arr)
-            else:
-                temp_x,temp_y = cut_in_sequences(_array,seq_len=self.seq_len, inc=self.increment if not _split == "test" else 1,prognosis=self.future)
-            temp_x = np.stack(temp_x, axis=1) 
-            temp_y = np.stack(temp_y, axis=1)
-            setattr(self,f"{_split}_x",temp_x)    
-            setattr(self,f"{_split}_y",temp_y)
-            if _split == "test" :
-                # in case of iterative forecast: prognosis=1. per batch of n_iterative we will use the model predictions as input
-                # otherwise: prognosis = future. the data to plot will be composed of the predicted items. (hence the increment)
-                temp_x,temp_y = cut_in_sequences(_array,seq_len=self.seq_len, inc=self.future,prognosis=self.future)
-                temp_x = np.stack(temp_x, axis=1) 
-                temp_y = np.stack(temp_y, axis=1)
-                setattr(self,f"predict_x",temp_x)    
-                setattr(self,f"predict_y",temp_y)  
-
-        print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
-        kf = KFold(n_splits=5,shuffle=False)
-        self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
-  
-    def set_kfold_splits(self):
-        print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
-        kf = KFold(n_splits=5,shuffle=False)
-        self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
 
     def train_test_split(self,x) :
         """Create train val test split. We need each of these splits to be created from sequential chunks
@@ -399,13 +442,14 @@ class NeuronData(DataBaseClass):
         return (val_data, test_data,train_data)  
     
 class NeuronLaserData(DataBaseClass):
-    def __init__(self,binwidth=0.05,sigma=7,seq_len=32,future=1,iterative_forecast=False,batch_size=16):
+    def __init__(self,binwidth=0.05,sigma=7,seq_len=32,future=1,iterative_forecast=False,batch_size=16,cross_val_fold=None,scheduled_sampling =False):
         self.seq_len = int(seq_len)
         self.batch_size = batch_size
         self.binwidth = binwidth
         self.future = future
         self.iterative_forecast = iterative_forecast
         self.sigma = sigma
+        self.scheduled_sampling = scheduled_sampling
         self.n_iterative_forecasts = 0
         if self.iterative_forecast:
             self.n_iterative_forecasts = future
@@ -418,7 +462,7 @@ class NeuronLaserData(DataBaseClass):
         after stack (after make sequences):  (seq_len,N_sequences,T,Neurons)
         """
         super().__init__()
-        self.load_data()
+        self.load_data(cross_val_fold)
         self.set_kfold_splits()
 
     def load_data(self, cross_val_fold=None):
@@ -442,44 +486,6 @@ class NeuronLaserData(DataBaseClass):
         self.make_sequences()   
         self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
         self.normalize_data()
-
-    def make_sequences(self):
-        # cut the data into x and y sequences
-        dataset_splits = ["train","valid","test"]
-        for _split in dataset_splits:
-            _array = getattr(self,f"{_split}_chunk")
-            if _split == "train":
-                temp_x = []
-                temp_y = []
-                for _arr in _array:
-                    try:
-                        temp_x_arr,temp_y_arr = cut_in_sequences(_arr,seq_len=self.seq_len, inc=self.increment ,prognosis=self.future)
-                    except Exception as e:
-                        print(e)
-                    temp_x.extend(temp_x_arr) # (N sequences, 32, N neurons)
-                    temp_y.extend(temp_y_arr)
-            else:
-                temp_x,temp_y = cut_in_sequences(_array,seq_len=self.seq_len, inc=self.increment if not _split == "test" else 1,prognosis=self.future)
-            temp_x = np.stack(temp_x, axis=1) 
-            temp_y = np.stack(temp_y, axis=1)[:,:,:-1]
-            setattr(self,f"{_split}_x",temp_x)    
-            setattr(self,f"{_split}_y",temp_y)
-            if _split == "test" :
-                # in case of iterative forecast:
-                # every batch contains 5 sequences of (x,y) we need the y's for reference and for x we will append the first batch item with model predictions 
-                # prognosis (=future) is always 1
-                # otherwise: 
-                #   prognosis = future. the data to plot will be composed of the predicted items. (hence the increment)
-                temp_x,temp_y = cut_in_sequences(_array,seq_len=self.seq_len, inc=self.future,prognosis=self.future)
-                temp_x = np.stack(temp_x, axis=1) 
-                temp_y = np.stack(temp_y, axis=1)[:,:,:-1]
-                setattr(self,f"test_plot_x",temp_x)    
-                setattr(self,f"test_plot_y",temp_y)  
-
-    def set_kfold_splits(self):
-        print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
-        kf = KFold(n_splits=5,shuffle=False)
-        self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
 
     def train_test_split(self,x) :
         """Create train val test split. We need each of these splits to be created from sequential chunks
@@ -547,6 +553,7 @@ class ForecastModel:
         self.iterative_forecast = _data.iterative_forecast
         self.data_loader = _data.get_dataloader
         self.cross_val_fold = _data.cross_val_fold
+        self.scheduled_sampling = _data.scheduled_sampling
 
     def set_model(self):
         if(self.model_type.startswith("ltc")):
@@ -556,21 +563,19 @@ class ForecastModel:
 
         # lr_logger = LearningRateMonitor(logging_interval='step') # this is a callback
 
-    def set_optuna_learner(self):
+    def set_optuna_trainer(self):
         self.trainer = pl.Trainer(
             logger = False,
             max_epochs= self.epochs,
             gradient_clip_val=1,
             accelerator= 'cpu' if self.gpus is None else 'gpu',
+            default_root_dir = self.store_dir,
             devices=self.gpus,
             callbacks=[PyTorchLightningPruningCallback(self.trial, monitor="val_loss")],
-
+            enable_checkpointing=False
         )
 
-        self.learn = SequenceLearner(model = self._model, loss_func = self.loss,lr=self.learning_rate,cosine_lr=self.cosine_lr,
-            _loaderfunc= self.data_loader,n_iterations=(self.batch_size * self.epochs),future = self.future,denormalize = self.denormalize) 
-
-    def set_fit_learner(self):
+    def set_fit_trainer(self):
         # Modelcheckoint is used to obtain the last and best checkpoint
         # dirpath should be load dir, which should refer to checkpoint 
         # 
@@ -598,21 +603,15 @@ class ForecastModel:
             callbacks=[self.checkpoint_callback],
         )
 
-        self.learn = SequenceLearner(model= self._model,loss_func = self.loss,lr=self.learning_rate,cosine_lr=self.cosine_lr,iterative_forecast=self.iterative_forecast,
-            _loaderfunc=self._loaderfunc,n_iterations=(self.batch_size * self.epochs),future = self.future,denormalize = self.denormalize)
-
     def fit(self,trial=None,epochs=100,learning_rate=1e-2,cosine_lr=False,model_size =None,mixed_memory=True,model_type="ltc",gpus=None,future_loss = False,reset = False):
             self.epochs = epochs
-            self.cosine_lr = cosine_lr
+            self.cosine_lr = cosine_lr   
             self.gpus = gpus
             self.trial = trial
             self.model_size = model_size
             self.mixed_memory = mixed_memory
             self.model_type = model_type
-            self.learning_rate = learning_rate
-
-
-            print(self.load_dir,self.store_dir)
+            self.learning_rate = float(learning_rate)
             if future_loss:
                 self.loss = MSELossfuture(n_future=self.future)
             else:
@@ -620,10 +619,18 @@ class ForecastModel:
             self.set_model()
 
             if not trial:
-                self.set_fit_learner()
+                self.set_fit_trainer()
             else:
-                self.set_optuna_learner()
+                self.set_optuna_trainer()
+            if self.scheduled_sampling:
 
+                self.learn = ScheduledSamplingSequenceLearner(model= self._model,loss_func = self.loss,lr=self.learning_rate,cosine_lr=self.cosine_lr,
+                                            iterative_forecast=self.iterative_forecast,_loaderfunc=self._loaderfunc, n_iterative_forecasts = self.n_iterative_forecasts, 
+                                            n_iterations=(self.batch_size * self.epochs),future = self.future,denormalize = self.denormalize)                
+            else:
+                self.learn = SequenceLearner(model= self._model,loss_func = self.loss,lr=self.learning_rate,cosine_lr=self.cosine_lr,
+                                            iterative_forecast=self.iterative_forecast,_loaderfunc=self._loaderfunc, n_iterative_forecasts = self.n_iterative_forecasts, 
+                                            n_iterations=(self.batch_size * self.epochs),future = self.future,denormalize = self.denormalize)
             try:
                 if not reset and not trial:
                     self.trainer.fit(self.learn,ckpt_path=self.load_path)
@@ -637,7 +644,8 @@ class ForecastModel:
                         "seq_len":self.seq_len,
                         "future": self.n_forecasts,
                         "model_size": self.model_size,
-                        "future loss": future_loss
+                        "future loss": future_loss,
+                        "scheduled sampling": self.scheduled_sampling
                     })
                 self.trainer.fit(self.learn)
 
@@ -664,8 +672,8 @@ class ForecastModel:
     def plot_test(self,version="before",iterative_forecast=False):
         predictions = self.trainer.predict(dataloaders = self._loaderfunc(subset="test_plot"),ckpt_path=f"{self.load_dir}/{version}.ckpt")
         y,y_hat,error = map(torch.cat, zip(*predictions))
-        print(y.shape, y_hat.shape, error.shape)
 
+        laser_points = torch.permute(self.test_plot_x[:-1],(1,0,2)).flatten(0,1)
         if self.n_forecasts> 1:
             fig, axes = plt.subplots(self.out_features, 1, figsize=(30,4*self.out_features),constrained_layout=True)
             axes = axes.ravel()
@@ -729,154 +737,118 @@ def plot_future_point(future_point,y,y_hat,error,n_forecasts,version,out_feature
     plt.close()
     print(f"saved plots in results/{task}/{model_id}_{version}")
 
+class RealtimeNeuronLaserData(NeuronLaserData):
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.pipe_connection = None
 
-data_classes = {
-    "cheetah": CheetahData,
-    "traffic": TrafficData,
-    "occupancy": OccupancyData,
-    "neurons": NeuronData,
-    "neuronlaser": NeuronLaserData
-}
-
-study_names = {
-    "cheetah":2024070307,
-    "occupancy":20240626131851
-}
-
-def optimise_sigma(model,args,trial):
-    sigma = trial.suggest_int("sigma",1,8)
-    some_data_class = data_classes[args.dataset]
-    val_scores = 0
-    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len,iterative_forecast=args.iterative_forecast,sigma=sigma)
-    for cross_val_fold in range(5):
-        print(f"--- fold {cross_val_fold} ---")
-        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
-        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
-        val_scores += val_score
-    return val_scores / 5
-
-def optimise_seq_len(model,args,trial):
-    seq_len = trial.suggest_discrete_uniform("seq_len",32,80,16)
-    some_data_class = data_classes[args.dataset]
-    val_scores = 0
-    dataset_data = some_data_class(future=args.future,seq_len=seq_len,iterative_forecast=args.iterative_forecast,sigma=args.sigma)
-    for cross_val_fold in range(5):
-        print(f"--- fold {cross_val_fold} ---")
-        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
-        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
-        val_scores += val_score
-    return val_scores / 5
-
-def optimise_model_params(model,dataset_data, args,trial):
-    # https://github.com/optuna/optuna-examples/blob/main/pytorch/pytorch_lightning_simple.py
-    args.learning_rate = trial.suggest_float("learning_rate",1e-4,5e-2)
-    args.cosine_lr = trial.suggest_int("cosine_lr",0,1) if args.cosine_lr else 0
-    args.model_size  = trial.suggest_int("model_size",model.out_features +3,40,step=2)
-    val_scores = 0
-    for cross_val_fold in range(5):
-        print(f"--- fold {cross_val_fold} ---")
-        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
-        model.set_data(dataset_data)
-        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
-        val_scores += val_score
-    return val_scores / 5
-
-def set_data_and_fit(dataset_data,model,args,trial):
-    model.set_data(dataset_data)
-    val_score = model.fit(trial=trial,epochs=args.epochs,gpus=args.gpus,learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
-                                            model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size)
-    return val_score
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model',default="ltc")
-    parser.add_argument('--size',default=32,type=int)
-    parser.add_argument('--mixed_memory',action='store_true')
-    parser.add_argument('--epochs',default=200,type=int)
-    parser.add_argument('--gpus', nargs='+', type=int,default = None)    
-    parser.add_argument('--initial_lr',default=0.02,type=float)
-    parser.add_argument('--cosine_lr',action='store_true')
-    parser.add_argument('--dataset',default="cheetah",type=str) 
-    parser.add_argument('--seq_len',default=32,type=str)
-    parser.add_argument('--future',default=1,type=int)
-    parser.add_argument('--iterative_forecast',action='store_true')
-    parser.add_argument('--optimise',action='store_true')
-    parser.add_argument('--pruning',action='store_true')
-    parser.add_argument('--model_id_shift',type=int,default=0)
-    parser.add_argument('--future_loss',action='store_true')
-    parser.add_argument('--binwidth',default =0.05, type= float)
-    parser.add_argument('--model_id',default =0, type= int)
-    parser.add_argument('--sigma',default =5, type= str)
-    parser.add_argument('--checkpoint_id',default =0, type= int)
-    parser.add_argument('--reset',action='store_true')
-
-    args = parser.parse_args()
-    use_optuna = (args.sigma == "optimise" or args.optimise or args.seq_len == "optimise")
-
-    assert args.future > 0 , "Future should be > 0"
-    some_data_class = data_classes[args.dataset]
-    dataset_data = some_data_class(future=args.future,seq_len=args.seq_len if args.seq_len != "optimise" else 32,binwidth=args.binwidth,
-        iterative_forecast=args.iterative_forecast,sigma=args.sigma if args.sigma != "optimise" else 5)
-    task = args.dataset + "_forecast"
-    checkpoint_id = None
-    if not args.model_id:
-        model_id = str(int(dt.datetime.today().strftime("%Y%m%d%H"))  + args.model_id_shift)
-    else:
-        model_id = args.model_id
-    if args.checkpoint_id :# we copy checkpoint to new model
-        checkpoint_id = args.checkpoint_id
-
+    def prepare_realtime_data(self,_path):
+        x = np.load(_path)
+        x = x.astype(np.float32)
+        x = np.transpose(x)
+        
+        setattr(self,"predict_x",x)   
+        # print("sending ",flush=True)
+        in_x, in_x_de = self.get_dataloader(subset="predict")
+        self.pipe_connection.send((in_x, in_x_de))
     
-    print(f" --------- model id: {model_id} --------- ")
-    
-    model = ForecastModel(task=task,model_id = model_id,_data=dataset_data, checkpoint_id=checkpoint_id)
+    def set_pipe(self, pipe_connection):
+        self.pipe_connection = pipe_connection
 
-    
-    if use_optuna:
-        storage = optuna.storages.RDBStorage(
-                url=f"sqlite:///{task}.db",
-                engine_kwargs={"connect_args": {"timeout": 100}},
-        )
-        study_name= str(int(model_id))
-        if args.sigma == "optimise" or args.seq_len == "optimise":
-            pruner = optuna.pruners.NopPruner()
-            sampler=optuna.samplers.BruteForceSampler()
-            if args.seq_len == "optimise":
-                study_name= str(int(model_id))+"seq_len"
-        else:
-            pruner = optuna.pruners.PatientPruner(optuna.pruners.MedianPruner(),patience=4) if args.pruning else optuna.pruners.NopPruner()
-            sampler = optuna.samplers.TPESampler()
+class RealtimeForecastModel(ForecastModel):
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.total_read_timesteps = 0
+        self.trainer = pl.Trainer()
+        self.prepare_realtime_data = kwargs["_data"].prepare_realtime_data
+        self.norm_recorded_history = torch.empty((1,0,self.in_features-1),dtype=torch.float32)
+        self.recorded_history = torch.empty((0,self.in_features-1),dtype=torch.float32)
+        self.predict_pos_history = torch.full((self.n_forecasts,self.in_features-1),0)
+        self.predict_neg_history = torch.full((self.n_forecasts,self.in_features-1),0)
 
-        study = optuna.create_study(direction="minimize", pruner=pruner,
-                        study_name= study_name,sampler=sampler,
-                        storage=storage,load_if_exists=True)
 
-        if args.sigma == "optimise":
-            study.optimize(lambda trial: optimise_sigma(model,args,trial),
-                        n_trials=100)
+    def run(self,recording_id,gpus,pipe_connection,plot_sender,model_size,mixed_memory,model_type):  
+        self.model_size = model_size
+        self.mixed_memory = mixed_memory
+        self.model_type = model_type
 
-        elif args.seq_len == "optimise":
-            study.optimize(lambda trial: optimise_seq_len(model,args,trial),
-                            n_trials=100)
+            
+        self.set_model()
+        try:    
+            self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
+        except: 
+            self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
+        self.learn.eval()
+        self.pipe_connection = pipe_connection
+        self.plot_sender = plot_sender
+        self.recording_id = recording_id
 
-        else:
-            study.optimize(lambda trial: optimise_model_params(model,dataset_data,args,trial),
-                n_trials=100)
-                
-        print("Number of finished trials: {}".format(len(study.trials)))
+        self.predict()
 
-        print("Best trial:")
-        trial = study.best_trial
 
-        print("  Value: {}".format(trial.value))
 
-        print("  Params: ")
-        for key, value in trial.params.items():
-            print("    {}: {}".format(key, value))
+    def predict(self):
+        self.device = next(self._model.parameters()).device
+        # while not self.stop_event.is_set():
+        self.norm_recorded_history = self.norm_recorded_history.to(self.device,non_blocking=True)
+        print("start predict")
+        while True:
+            # with self.data_condition:
+            #     self.data_condition.wait()
+            _start = dt.datetime.now()
+            if  not self.pipe_connection.poll():
+                continue
+            in_x, in_x_de = self.pipe_connection.recv()
+            # print(f"read {_}")
+            # in_x, in_x_de = self._loaderfunc(subset="predict")
+            # print("incoming: ",in_x.shape,flush=True)
+            in_x = in_x.to(self.device,non_blocking=True) # shape of (seq_len,1,neurons) > (1,seq_len,neurons) 
+            # print("incoming: ",in_x.shape,flush=True)
+            # new_read_timesteps = in_x.shape[1] - self.total_read_timesteps
+            new_read_timesteps = in_x.shape[1]
+            self.total_read_timesteps += new_read_timesteps
+            self.norm_recorded_history = torch.concat((self.norm_recorded_history,in_x), dim= 1) 
+            self.recorded_history = torch.concat((self.recorded_history,torch.tensor(in_x_de[-new_read_timesteps:])), dim= 0) 
 
-    elif not args.optimise:
-        model.fit(epochs=args.epochs,gpus=args.gpus,model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size, learning_rate=args.initial_lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,reset = args.reset)
-        model.test(iterative_forecast=args.iterative_forecast,checkpoint="last")
-        model.test(iterative_forecast=args.iterative_forecast,checkpoint="best")
-    
+            if self.total_read_timesteps < self.seq_len:
+                print("too small",self.norm_recorded_history.shape,flush=True)
+                self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((new_read_timesteps,self.in_features-1),0)), dim= 0) 
+                self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((new_read_timesteps,self.in_features-1),0)), dim= 0) 
+                continue
+
+            missed_predictions = max(0,new_read_timesteps - self.n_forecasts)
+            # in_x = in_x[:,-self.seq_len:,:] #fetch last 32 timestamps
+            in_x = self.norm_recorded_history[:,-self.seq_len:,:]
+            x_pos = x_neg = in_x # (1,seq_len,neurons)
+            y_hat_pos = y_hat_neg  = torch.empty((1,self.n_iterative_forecasts,in_x.shape[-1]), device=self.device)
+            for i in range(self.n_iterative_forecasts):
+                """we only add a 1 for laser activation at the 2 direct following bin, no  other bins"""
+                x_pos_in = torch.cat((x_pos,torch.full((1,32,1),1 if i < 2 else 0,device=self.device)),dim=-1)
+                x_neg_in = torch.cat((x_neg,torch.full((1,32,1), 0,device=self.device)),dim=-1)
+                x = torch.cat((x_pos_in,x_neg_in),dim=0)
+                # print("before model call")
+                # print(f"pred {i}",flush=True)
+                pred, _ = self._model.forward(x) # (2, last timestep, neurons(excluding activation))
+                (next_step_pos,next_step_neg) = pred
+                y_hat_pos[:,i] = next_step_pos[-1:,:]
+                y_hat_neg[:,i] = next_step_neg[-1:,:]
+                x_pos = torch.cat((x_pos[:,1:],next_step_pos[-1:,:].unsqueeze(0)),dim=1)
+                x_neg = torch.cat((x_neg[:,1:],next_step_neg[-1:,:].unsqueeze(0)),dim=1) 
+            """TODO Now we compare the pos (stimulation) predictions and neg (absence) predictions"""
+            """Now we plot the recorded history of the signal followed by the forecasts
+                    for every neuron + activation
+                    make sure to include the laseractivation feature in the predictions
+            """
+            print('Duration: {:.4f}'.format((dt.datetime.now() - _start).total_seconds() *1000),flush=True)
+            y_hat_pos_de = self.denormalize(y_hat_pos.detach().cpu(),"y").flatten(0,1) # (5,17)
+            y_hat_neg_de = self.denormalize(y_hat_neg.detach().cpu(),"y").flatten(0,1)
+        
+            # self.y_hat_pos_de = y_hat_pos_de
+            # self.y_hat_neg_de = y_hat_neg_de
+            self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_pos_de), dim= 0) 
+            self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_neg_de), dim= 0) 
+            # print("records so far: ", self.recorded_history.shape, self.predict_pos_history.shape,self.predict_neg_history.shape,flush=True)
+            plot_length = min(100, self.total_read_timesteps)
+            self.plot_sender.send((plot_length,
+                    self.predict_pos_history[-(plot_length+self.n_forecasts):],self.predict_neg_history[-(plot_length+self.n_forecasts):], 
+                    self.recorded_history[-plot_length:]))

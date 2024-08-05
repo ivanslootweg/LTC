@@ -3,7 +3,7 @@
 
 
 Organisational  
-        decide on binning                       one. 50 ms 50% overlap (8 07)
+        decide on binning                       done. 50 ms 50% overlap (8 07)
         make neuron data class                  done.           
         inspect 17-neuron dataset               done. select 17 neuron, exclude neuron 9(8) (8 07)
         plot predictions and error              done.
@@ -48,9 +48,9 @@ Model implementation
                 >normalize predict data 
                 >make predict dataloader
         incremental prediction plotting         done. 1707
-        scheduled sampling in training          queue (1)
+        scheduled sampling in training          running 05 08. set sigma and model size and sequence length (7,32,48). tuning lr.
         revisit chunk selection.                done 16 07. training data seqs are from same chunk. sequential val and test chunks. random train chunks
-        real-time implementation in python      pending (24/25/26/29 07)
+        real-time implementation in python      done (24/25/26/29 07)
                 first with threads and locks    
                 now with multiprocessing and pipes
                 data loads only new bins to decrease
@@ -59,7 +59,7 @@ Model implementation
         write code for resuming                 done 18 07
         implement predict datasets              done 2207
                 for other classes, if necessary 
-        implement realtime prediction           done. 2207 left to do : conver to bins
+        implement realtime prediction           done. 2207 left to do : convert to bins
                 and plotting   
         for plots include the laser activation  done. 2207 (not in plot but present in data)
                 at the first future position 

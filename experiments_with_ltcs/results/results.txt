@@ -57,8 +57,14 @@ python forecast.py --size 36 --epochs 200 --gpus 1 --initial_lr 0.022 --dataset 
 Comparisons
 
 new hyperparam tuning
-1/5         0.05    53      1                                                       80104           sigma 7 seq len 32 10-0/1, 13-0, 3-0
+1/5         0.05    53      1                                                       80106           sigma 7 seq len 32 (find size and lr) < found size 32. terminated
+1/5         0.05    53      1                                                       80113           sigma 7 size 40 (find seq len) dcluser-0/1/2@  < found seq len 48. completed
+1/5         0.05    53      1                                                       80505           sigma 7 seq len 48 (find size) 10-0/1, 13-0/1, 3-0/1
+1/5         0.05    53      1                                                       80507           sigma 7 seq len 48 size 32 scheduled sampling. 14/0 find lr. this time with pruning. the others above are without pruning.
 
+
+
+in mlp14-0/1 we have iterative vs non iterative sampling
 FUTURE      LOSS        INCREMENTAL         ID
 5           ALL         -                   2206
 5           FUTURE      -                   2205

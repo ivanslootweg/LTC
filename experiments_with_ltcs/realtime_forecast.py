@@ -1,31 +1,22 @@
 #%matplotlib qt
 import argparse
-import torch
 import matplotlib.pyplot as plt
 import numpy as np
-import pytorch_lightning as pl
 import traceback
 import time
 import contextlib
 import multiprocessing
 from multiprocessing import Pipe
 
-from forecast import ForecastModel
-from forecast import NeuronLaserData,  DataBaseClass
-from forecast import MSELossfuture
-from LTC_learner import SequenceLearner
+
 from load_data import create_realtime_bins
 from create_dummy_data import create_dummy_data
+from modules import RealtimeNeuronLaserData, RealtimeForecastModel
 
-
-import fcntl 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, EVENT_TYPE_MODIFIED, EVENT_TYPE_CREATED
+from watchdog.events import FileSystemEventHandler
 import threading
 import datetime as dt
-from threading import Timer
-from matplotlib.animation import FuncAnimation
-
 
 plt.rcParams.update({
     'axes.titlesize': 4,    # Title size
@@ -80,7 +71,6 @@ class PauseDataHandler(FileSystemEventHandler):
             yield True
         else:
             yield False
-
 
 class DataHandler(FileSystemEventHandler):
     def __init__(self,recording_id,prepare_realtime_data):
@@ -165,128 +155,6 @@ class PlotHandler(FileSystemEventHandler):
             print(f"Error handling file C: {e}")    
             traceback.print_exc()
     
-class RealtimeNeuronLaserData(NeuronLaserData):
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        # self.data_condition = threading.Condition()
-        self.pipe_connection = None
-
-    def prepare_realtime_data(self,_path):
-        x = np.load(_path)
-        x = x.astype(np.float32)
-        x = np.transpose(x)
-        
-        # with self.data_condition:
-        #     setattr(self,f"predict_x",x)   
-        #     print("notified predict",flush=True)
-        #     self.data_condition.notify_all()
-        #     return
-
-        setattr(self,"predict_x",x)   
-        # print("sending ",flush=True)
-        in_x, in_x_de = self.get_dataloader(subset="predict")
-        self.pipe_connection.send((in_x, in_x_de))
-    
-    def set_pipe(pipe_connection):
-        self.pipe_connection = pipe_connection
-
-class RealtimeForecastModel(ForecastModel):
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.total_read_timesteps = 0
-        self.trainer = pl.Trainer()
-        self.prepare_realtime_data = kwargs["_data"].prepare_realtime_data
-        self.norm_recorded_history = torch.empty((1,0,self.in_features-1),dtype=torch.float32)
-        self.recorded_history = torch.empty((0,self.in_features-1),dtype=torch.float32)
-        self.predict_pos_history = torch.full((self.n_forecasts,self.in_features-1),0)
-        self.predict_neg_history = torch.full((self.n_forecasts,self.in_features-1),0)
-
-
-    def run(self,recording_id,gpus,pipe_connection,plot_sender,model_size,mixed_memory,model_type):  
-        self.model_size = model_size
-        self.mixed_memory = mixed_memory
-        self.model_type = model_type
-
-            
-        self.set_model()
-        try:    
-            self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
-        except: 
-            self.learn = SequenceLearner.load_from_checkpoint(f"{self.load_dir}/best.ckpt",model=self._model,map_location=torch.device(gpus))
-        self.learn.eval()
-        self.pipe_connection = pipe_connection
-        self.plot_sender = plot_sender
-        self.recording_id = recording_id
-
-        self.predict()
-
-
-
-    def predict(self):
-        self.device = next(self._model.parameters()).device
-        # while not self.stop_event.is_set():
-        self.norm_recorded_history = self.norm_recorded_history.to(self.device,non_blocking=True)
-        print("start predict")
-        while True:
-            # with self.data_condition:
-            #     self.data_condition.wait()
-            _start = dt.datetime.now()
-            if  not self.pipe_connection.poll():
-                continue
-            in_x, in_x_de = self.pipe_connection.recv()
-            # print(f"read {_}")
-            # in_x, in_x_de = self._loaderfunc(subset="predict")
-            # print("incoming: ",in_x.shape,flush=True)
-            in_x = in_x.to(self.device,non_blocking=True) # shape of (seq_len,1,neurons) > (1,seq_len,neurons) 
-            # print("incoming: ",in_x.shape,flush=True)
-            # new_read_timesteps = in_x.shape[1] - self.total_read_timesteps
-            new_read_timesteps = in_x.shape[1]
-            self.total_read_timesteps += new_read_timesteps
-            self.norm_recorded_history = torch.concat((self.norm_recorded_history,in_x), dim= 1) 
-            self.recorded_history = torch.concat((self.recorded_history,torch.tensor(in_x_de[-new_read_timesteps:])), dim= 0) 
-
-            if self.total_read_timesteps < self.seq_len:
-                print("too small",self.norm_recorded_history.shape,flush=True)
-                self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((new_read_timesteps,self.in_features-1),0)), dim= 0) 
-                self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((new_read_timesteps,self.in_features-1),0)), dim= 0) 
-                continue
-
-            missed_predictions = max(0,new_read_timesteps - self.n_forecasts)
-            # in_x = in_x[:,-self.seq_len:,:] #fetch last 32 timestamps
-            in_x = self.norm_recorded_history[:,-self.seq_len:,:]
-            x_pos = x_neg = in_x # (1,seq_len,neurons)
-            y_hat_pos = y_hat_neg  = torch.empty((1,self.n_iterative_forecasts,in_x.shape[-1]), device=self.device)
-            for i in range(self.n_iterative_forecasts):
-                """we only add a 1 for laser activation at the 2 direct following bin, no  other bins"""
-                x_pos_in = torch.cat((x_pos,torch.full((1,32,1),1 if i < 2 else 0,device=self.device)),dim=-1)
-                x_neg_in = torch.cat((x_neg,torch.full((1,32,1), 0,device=self.device)),dim=-1)
-                x = torch.cat((x_pos_in,x_neg_in),dim=0)
-                # print("before model call")
-                # print(f"pred {i}",flush=True)
-                pred, _ = self._model.forward(x) # (2, last timestep, neurons(excluding activation))
-                (next_step_pos,next_step_neg) = pred
-                y_hat_pos[:,i] = next_step_pos[-1:,:]
-                y_hat_neg[:,i] = next_step_neg[-1:,:]
-                x_pos = torch.cat((x_pos[:,1:],next_step_pos[-1:,:].unsqueeze(0)),dim=1)
-                x_neg = torch.cat((x_neg[:,1:],next_step_neg[-1:,:].unsqueeze(0)),dim=1) 
-            """TODO Now we compare the pos (stimulation) predictions and neg (absence) predictions"""
-            """Now we plot the recorded history of the signal followed by the forecasts
-                    for every neuron + activation
-                    make sure to include the laseractivation feature in the predictions
-            """
-            print('Duration: {:.4f}'.format((dt.datetime.now() - _start).total_seconds() *1000),flush=True)
-            y_hat_pos_de = self.denormalize(y_hat_pos.detach().cpu(),"y").flatten(0,1) # (5,17)
-            y_hat_neg_de = self.denormalize(y_hat_neg.detach().cpu(),"y").flatten(0,1)
-        
-            # self.y_hat_pos_de = y_hat_pos_de
-            # self.y_hat_neg_de = y_hat_neg_de
-            self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_pos_de), dim= 0) 
-            self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_neg_de), dim= 0) 
-            # print("records so far: ", self.recorded_history.shape, self.predict_pos_history.shape,self.predict_neg_history.shape,flush=True)
-            plot_length = min(100, self.total_read_timesteps)
-            self.plot_sender.send((plot_length,
-                    self.predict_pos_history[-(plot_length+self.n_forecasts):],self.predict_neg_history[-(plot_length+self.n_forecasts):], 
-                    self.recorded_history[-plot_length:]))
 
 
 def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,plot_sender,args):
@@ -335,10 +203,7 @@ if __name__ == "__main__":
     mixed_memory = True
     task =  "neuronlaser_forecast"
     recording_id = str(int(dt.datetime.today().strftime("%Y%m%d%H%M")))
-       
-    assert args.future > 0 , "Future should be > 0"
-    # some_data_class = get_database_class(RealtimeNeuronLaserData)
-    
+        
     model_id = args.model_id
     recording_id = "dummy"
     print(f" --------- model id: {model_id} recording id : {recording_id}--------- ")
@@ -348,7 +213,7 @@ if __name__ == "__main__":
 
     parent_connection, child_connection = Pipe()
     dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
-    dataset_data.pipe_connection = child_connection
+    dataset_data.set_pipe(child_connection)
 
     plot_listener, plot_sender = Pipe()
 
