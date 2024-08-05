@@ -28,53 +28,47 @@ study_names = {
 def optimise_sigma(model,args,trial):
     sigma = trial.suggest_int("sigma",1,8)
     some_data_class = data_classes[args.dataset]
-    val_scores = 0
     dataset_data = some_data_class(future=args.future,seq_len=args.seq_len,iterative_forecast=args.iterative_forecast,sigma=sigma)
-    for cross_val_fold in range(5):
-        print(f"--- fold {cross_val_fold} ---")
-        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
-        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
-        val_scores += val_score
-    return val_scores / 5
+    val_score = execute_trial(dataset_data,model,args,trial) 
+    return val_score
 
 def optimise_lr(model,dataset_data, args,trial):
     args.lr = trial.suggest_float("learning_rate",1e-4,5e-2)
-    val_scores = 0
-    for cross_val_fold in range(5):
-        print(f"--- fold {cross_val_fold} ---")
-        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
-        model.set_data(dataset_data)
-        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
-        val_scores += val_score
-    return val_scores / 5
+    val_score = execute_trial(dataset_data,model,args,trial) 
+    return val_score
 
 def optimise_seq_len(model,args,trial):
     seq_len = trial.suggest_discrete_uniform("seq_len",32,80,16)
     some_data_class = data_classes[args.dataset]
-    val_scores = 0
     dataset_data = some_data_class(future=args.future,seq_len=seq_len,iterative_forecast=args.iterative_forecast,sigma=args.sigma)
-    for cross_val_fold in range(5):
-        print(f"--- fold {cross_val_fold} ---")
-        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
-        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
-        val_scores += val_score
-    return val_scores / 5
+    val_score = execute_trial(dataset_data,model,args,trial) 
+    return val_score
 
 def optimise_model_params(model,dataset_data, args,trial):
     # https://github.com/optuna/optuna-examples/blob/main/pytorch/pytorch_lightning_simple.py
     args.lr = trial.suggest_float("learning_rate",1e-4,5e-2)
     args.cosine_lr = trial.suggest_int("cosine_lr",0,1) if args.cosine_lr else 0
     args.model_size  = trial.suggest_int("model_size",model.out_features +3,40,step=2)
-    val_scores = 0
-    for cross_val_fold in range(5):
-        print(f"--- fold {cross_val_fold} ---")
-        dataset_data.load_data(cross_val_fold=cross_val_fold+1)
-        model.set_data(dataset_data)
-        val_score = set_data_and_fit(dataset_data,model,args,trial = trial)
-        val_scores += val_score
-    return val_scores / 5
+    val_score = execute_trial(dataset_data,model,args,trial) 
+    return val_score
 
-def set_data_and_fit(dataset_data,model,args,trial=None):
+def execute_trial(dataset_data,model,args,trial = None):
+    if not args.scheduled_sampling:
+        val_scores = 0
+        for cross_val_fold in range(5):
+            val_score = fit_for_fold(dataset_data,model,args,cross_val_fold,trial = trial)
+            val_scores += val_score
+        return val_scores / 5
+    else:
+        model.set_data(dataset_data)
+        val_score = model.fit(trial=trial,epochs=args.epochs,gpus=args.gpus,learning_rate=args.lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
+                                            model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size)
+        return val_score
+
+
+def fit_for_fold(dataset_data,model,args,cross_val_fold,trial=None):
+    print(f"--- fold {cross_val_fold} ---")
+    dataset_data.load_data(cross_val_fold=cross_val_fold+1)
     model.set_data(dataset_data)
     val_score = model.fit(trial=trial,epochs=args.epochs,gpus=args.gpus,learning_rate=args.lr,cosine_lr=args.cosine_lr,future_loss=args.future_loss,
                                             model_type=args.model,mixed_memory=args.mixed_memory,model_size=args.size)

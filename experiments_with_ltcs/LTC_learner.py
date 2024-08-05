@@ -114,7 +114,7 @@ class ScheduledSamplingSequenceLearner(SequenceLearner):
         x, y = batch
         y_hat = torch.empty_like(y)
         input_x = x[:1]
-        if torch.rand(1) > p:
+        if torch.rand(1) < p:
             for i in range(self.n_iterative_forecasts):
                 if i > 0:
                     # take the timestep inputs from pred
