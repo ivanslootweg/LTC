@@ -8,20 +8,21 @@ import abc
 
 from ncps.torch import LTC
 from ncps.wirings import FullyConnected
-
+import traceback 
 from sklearn.model_selection import KFold
 
 from LTC_learner import SequenceLearner,ScheduledSamplingSequenceLearner
 
 import torch
 import torch.nn as nn
-from torch.utils.data import TensorDataset, DataLoader, BatchSampler, SequentialSampler
+from torch.utils.data import TensorDataset, DataLoader, BatchSampler, SequentialSampler, Sampler, WeightedRandomSampler
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from optuna.integration import PyTorchLightningPruningCallback
 
+    
 class BatchShuffleSampler(BatchSampler):
     def __init__(self, sampler, batch_size, drop_last):
         super().__init__(sampler, batch_size, drop_last)
@@ -50,6 +51,40 @@ class BatchShuffleSampler(BatchSampler):
     def __len__(self):
         return len(self.sampler) // self.batch_size if self.drop_last else (len(self.sampler) + self.batch_size - 1) // self.batch_size
 
+class BatchWeightedShuffleSampler(BatchSampler):
+    def __init__(self, sampler, batch_size, drop_last,item_weights,gen,replacement=True):
+        super().__init__(sampler, batch_size, drop_last)
+        self.sampler = sampler
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.item_weights = item_weights
+        self.replacement = replacement
+        self.gen = gen
+        
+
+    def __iter__(self):
+        # Get all indices from the sampler
+        indices = list(self.sampler)
+        # Calculate the number of batches
+        num_batches = len(indices) // self.batch_size
+        if not self.drop_last:
+            num_batches += 1 if len(indices) % self.batch_size != 0 else 0
+        batch_weights = torch.tensor([sum(self.item_weights[i*self.batch_size:(i+1)*self.batch_size]) for i in range(num_batches)])
+        batch_weights = batch_weights / torch.sum(batch_weights)
+        # select how we sample batches
+        selected_batches = iter(torch.multinomial(torch.tensor(batch_weights,dtype=float), num_batches, self.replacement,generator=self.gen).tolist())
+        # Create batch indices
+        batch_indices = [indices[i*self.batch_size:(i+1)*self.batch_size] for i in selected_batches]
+        # Shuffle the order of batches, not the data within batches
+        np.random.shuffle(batch_indices)
+
+        # Flatten the list of batch indices
+        shuffled_indices = [batch for batch in batch_indices]
+        return iter(shuffled_indices)
+
+    def __len__(self):
+        return len(self.sampler) // self.batch_size if self.drop_last else (len(self.sampler) + self.batch_size - 1) // self.batch_size
+    
 class NMSELoss(nn.Module):
     def __init__(self):
         super(NMSELoss, self).__init__()
@@ -109,11 +144,14 @@ def cut_in_sequences(x,seq_len,inc=1,prognosis=1):
 
 class DataBaseClass:
     __metaclass__ = abc.ABCMeta
-
+    def __init__(self):
+        self.use_validation_data = True
+    
     @abc.abstractmethod 
     def normalize_data(self):
         dataset_names = ["train_x","train_y","valid_x", "valid_y","test_x","test_y","test_plot_x","test_plot_y"]
         train_with_noise = False
+
         for _name in dataset_names:
             _array = getattr(self,_name)
             _array = self.normalize(_array,_name.split("_")[-1])
@@ -124,9 +162,6 @@ class DataBaseClass:
                 print(f"{_name} post noise: ",str(_array.mean()))              
             setattr(self,_name, _array)
             
-        self.in_features = self.train_x.shape[2]
-        self.out_features = self.train_y.shape[2]
-
 
     @abc.abstractmethod 
     def get_dataloader(self,subset="train"):
@@ -147,47 +182,57 @@ class DataBaseClass:
         dataset = TensorDataset(x_data, y_data)
 
         num_workers = 4
-        if self.scheduled_sampling and "train" in subset:
-            sequential_sampler = SequentialSampler(dataset)
-            batch_sampler = BatchShuffleSampler(sequential_sampler,batch_size=self.batch_size, drop_last=False)
-            batch_size = None
+        batch_size = self.batch_size
+        weights =  (x_data[:, -5:,-1] == torch.max(x_data[...,-1]))
+        weights = torch.sum(weights,dim=1)
+        weights = (weights* (self.batch_size*4)) + 1
+        generator = torch.manual_seed(928405)
 
+        if self.scheduled_sampling and "train" in subset:
+            sequential_sampler = SequentialSampler(dataset)   
+            # batch_sampler = BatchShuffleSampler(sequential_sampler,batch_size=self.batch_size, drop_last=False)
+            batch_sampler = BatchWeightedShuffleSampler(sequential_sampler,batch_size=self.batch_size,drop_last=False,item_weights=weights,gen = generator)
             return DataLoader(
                 dataset = dataset,
                 batch_sampler= batch_sampler,
                 num_workers = num_workers
             )
-        else:
-            shuffle = False
-            batch_size = self.batch_size
-            if subset == "train":
-                shuffle = True
+        elif "train" in subset:
+            weights = weights / torch.sum(weights)
+            sampler = WeightedRandomSampler(weights,x_data.shape[0],replacement=True,generator=generator)
+            return DataLoader(
+                    dataset = dataset,
+                    batch_size =  batch_size,
+                    num_workers = num_workers,
+                    sampler = sampler
+                )
+        elif not "train" in subset:
             if subset == "test_plot" and self.iterative_forecast:
                 batch_size = self.n_forecasts 
                 num_workers = 1
-
             return DataLoader(
-                shuffle = shuffle,
+                shuffle = False,
                 dataset = dataset,
                 batch_size =  batch_size,
-                num_workers = num_workers
+                num_workers = num_workers,
             )
 
 
     @abc.abstractmethod 
-    def normalize(self, tensor,values="x"):
-        tensor = torch.tensor(tensor)
+    def normalize(self, _tensor,values="x"):
+        _tensor = torch.tensor(_tensor)
         if not hasattr(self,"std") or not hasattr(self,"mean"):
             self.mean = {}
             self.std = {}
         if not values in self.mean or not values in self.std:
-            self.mean[values] = torch.mean(tensor, dim=(0, 1), keepdim=True)
-            self.std[values] = torch.std(tensor, dim=(0, 1), keepdim=True)
+            self.mean[values] = torch.mean(_tensor, dim=(0, 1), keepdim=True)
+            self.std[values] = torch.std(_tensor, dim=(0, 1), keepdim=True)
             res = self.std[values].clone()
             res[self.std[values]==0] = torch.tensor(1)
             self.std[values] = res
             del res
-        return (tensor - self.mean[values][...,:tensor.shape[-1]]) / self.std[values][...,:tensor.shape[-1]]
+        #because if we use realtime data we do not have the laser-activation data channel in the input x data so this is not normalized
+        return (_tensor - self.mean[values][...,:_tensor.shape[-1]]) / self.std[values][...,:_tensor.shape[-1]]
 
 
     @abc.abstractmethod 
@@ -214,7 +259,7 @@ class DataBaseClass:
             else:
                 temp_x,temp_y = cut_in_sequences(_array,seq_len=self.seq_len, inc=self.increment if not _split == "test" else 1,prognosis=self.future)
             temp_x = np.stack(temp_x, axis=1) 
-            temp_y = np.stack(temp_y, axis=1)[:,:,:-1]
+            temp_y = np.stack(temp_y, axis=1)[:,:,:self.out_features] #deselect neuronlaser 
             setattr(self,f"{_split}_x",temp_x)    
             setattr(self,f"{_split}_y",temp_y)
             if _split == "test" :
@@ -225,14 +270,13 @@ class DataBaseClass:
                 #   prognosis = future. the data to plot will be composed of the predicted items. (hence the increment)
                 temp_x,temp_y = cut_in_sequences(_array,seq_len=self.seq_len, inc=self.future,prognosis=self.future)
                 temp_x = np.stack(temp_x, axis=1) 
-                temp_y = np.stack(temp_y, axis=1)[:,:,:-1]
+                temp_y = np.stack(temp_y, axis=1)[:,:,:self.out_features]
                 setattr(self,f"test_plot_x",temp_x)    
                 setattr(self,f"test_plot_y",temp_y)  
 
-
     @abc.abstractmethod 
     def set_kfold_splits(self):
-        print(f" {self.n_bins // 32} folds of length 32 out of {self.n_bins} bins ")
+        print(f" {self.n_bins // 32} folds of length {self.seq_len} out of {self.n_bins} bins ")
         kf = KFold(n_splits=5,shuffle=False)
         self.kfold_splits = list(kf.split(list(range(self.n_bins//32))))
 
@@ -393,11 +437,14 @@ class NeuronData(DataBaseClass):
             x = np.load("data/neurons/activations_f0.5_w1.0.npy")
         x = x.astype(np.float32)
         x = np.transpose(x)
-
+        self.in_features = x.shape[-1]
+        self.out_features = x.shape[-1]
         # train val test split
         self.valid_chunk,self.test_chunk, self.train_chunk = self.train_test_split(x)
-        self.increment = max(int(x.shape[0] / 1000),2)
-        self.make_sequences()         
+        self.increment = max(int(x.shape[0] / 2000),2)
+
+        self.make_sequences() 
+        self.laserpoint_timestamps = None        
         self.feature_labels = [f"neuron {i}" for i in range(self.train_y.shape[2])]
         self.normalize_data()
 
@@ -421,7 +468,11 @@ class NeuronData(DataBaseClass):
             #                                    [all start positions in the sequence ]     -       [indices in val chunk and some leading space (prevent overlap between test and val)]
             test_start_indices = list(set(range((self.n_bins - (self.seq_len+self.future)) - test_size)) - set(range(start_val-test_size, start_val + val_size)))
             start_test = np.random.RandomState(49823).choice(test_start_indices)
-            
+
+        if not self.use_validation_data:  
+            start_val = start_test  
+            val_size = test_size
+
         # Extract the val and test chunk and assign the rest to the train chunk
         val_data = x[start_val:start_val +val_size]
         test_data = x[start_test:start_test +test_size]
@@ -468,22 +519,26 @@ class NeuronLaserData(DataBaseClass):
     def load_data(self, cross_val_fold=None):
         self.cross_val_fold = cross_val_fold
         if self.binwidth == 0.05:
-            x = np.load(f"data/neurons/activations_ADL1_2023-10-24_22-40-25_s{self.sigma}.npy")
-            x2 = np.load(f"data/neurons/laserpulses_ADL1_2023-10-24_22-40-25_s{self.sigma}.npy")
-            # x = np.load(f"data/neurons/activations_ADL1_2023-07-31_00-09-22_s{self.sigma}.npy")
-            # x2 = np.load(f"data/neurons/laserpulses_ADL1_2023-07-31_00-09-22_s{self.sigma}.npy")
+            # x = np.load(f"data/neurons/activations_ADL1_2023-10-24_22-40-25_s{self.sigma}.npy")
+            # x2 = np.load(f"data/neurons/laserpulses_ADL1_2023-10-24_22-40-25_s{self.sigma}.npy")
+            x = np.load(f"data/neurons/activations_ADL1_2023-07-31_00-09-22_s{self.sigma}.npy")
+            x2 = np.load(f"data/neurons/laserpulses_ADL1_2023-07-31_00-09-22_s{self.sigma}.npy")
         # elif self.binwidth == 0.5:
         #     x = np.load("data/neurons/activations_f0.5_w1.0.npy")
         #     x2 = np.load("data/neurons/laserpulses_f0.5_w1.0.npy")
         x = np.concatenate([x,x2], 0)
         x = x.astype(np.float32)
         x = np.transpose(x)
+        self.in_features = x.shape[-1]
+        self.out_features = x.shape[-1] - 1
         # train val test split
         self.n_bins = x.shape[0] 
         self.valid_chunk,self.test_chunk, self.train_chunk = self.train_test_split(x)
         
-        self.increment = max(int(x.shape[0] / 1000),2)
+        self.increment = max(int(x.shape[0] / 2000),2)
         self.make_sequences()   
+        print(self.future)
+        self.laserpoint_timestamps = np.swapaxes(self.test_plot_x,0,1)[1:,-self.future:,-1].flatten()
         self.feature_labels = [f"vector {i}" for i in range(self.train_x.shape[2])]
         self.normalize_data()
 
@@ -507,7 +562,9 @@ class NeuronLaserData(DataBaseClass):
             #                                    [all start positions in the sequence ]     -       [indices in val chunk and some leading space (prevent overlap between test and val)]
             test_start_indices = list(set(range((self.n_bins - (self.seq_len+self.future)) - test_size)) - set(range(start_val-test_size, start_val + val_size)))
             start_test = np.random.RandomState(49823).choice(test_start_indices)
-            
+        if not self.use_validation_data:  
+            start_val = start_test  
+            val_size = test_size
         # Extract the val and test chunk and assign the rest to the train chunk
         val_data = x[start_val:start_val +val_size]
         test_data = x[start_test:start_test +test_size]
@@ -516,13 +573,16 @@ class NeuronLaserData(DataBaseClass):
         #obtain the space between test and val chunks. we cannot do np indexing on x(~val_indices|test_indices) because x is a list of objects
         try:
             chunk_separation = np.where(chunk_indices[:-1] != (chunk_indices[1:] -1) )[0][0]
+            train_data = [
+                x[:chunk_indices[0]],
+                x[chunk_indices[chunk_separation]:chunk_indices[chunk_separation+1]],
+                x[chunk_indices[-1]:]
+            ]
         except:
-            chunk_separation = 0
-        train_data = [
-            x[:chunk_indices[0]],
-            x[chunk_indices[chunk_separation]:chunk_indices[chunk_separation+1]],
-            x[chunk_indices[-1]:]
-        ]
+            train_data = [
+                x[:chunk_indices[0]],
+                x[chunk_indices[-1]:]
+            ]
 
         print(f"val idx: {start_val} - {start_val + val_size} ({val_size}) test idx: {start_test} {start_test + test_size} ({test_size})")
         return (val_data, test_data,train_data)  
@@ -530,12 +590,15 @@ class NeuronLaserData(DataBaseClass):
 class ForecastModel:    
     def __init__(self,model_id = None,_data=None,task=None,checkpoint_id = None):
         self.task = task
+        self.set_model_id(model_id,checkpoint_id)
+        self.set_data(_data)
+
+    def set_model_id(self,model_id,checkpoint_id):
         self.model_id = model_id
         self.experiment_name = f"{self.task}_{self.model_id}"
         self.store_dir = f"./checkpoints/{self.task}_{self.model_id}"
         self.load_dir =  f"./checkpoints/{self.task}_{checkpoint_id}" if checkpoint_id else self.store_dir 
         self.load_path = f"{self.load_dir}/last.ckpt"  
-        self.set_data(_data)
 
     def set_data(self,_data):
         self.future = _data.future
@@ -554,6 +617,7 @@ class ForecastModel:
         self.data_loader = _data.get_dataloader
         self.cross_val_fold = _data.cross_val_fold
         self.scheduled_sampling = _data.scheduled_sampling
+        self.test_laser_timestaps = _data.laserpoint_timestamps
 
     def set_model(self):
         if(self.model_type.startswith("ltc")):
@@ -583,7 +647,7 @@ class ForecastModel:
             save_top_k=1,
             monitor="val_loss",
             mode="min",
-            dirpath=self.load_dir ,
+            dirpath=self.store_dir ,
             filename="best",
             save_on_train_epoch_end=True,
             save_last=True
@@ -608,7 +672,7 @@ class ForecastModel:
             self.cosine_lr = cosine_lr   
             self.gpus = gpus
             self.trial = trial
-            self.model_size = model_size
+            self.model_size = int(model_size)
             self.mixed_memory = mixed_memory
             self.model_type = model_type
             self.learning_rate = float(learning_rate)
@@ -633,10 +697,12 @@ class ForecastModel:
                                             n_iterations=(self.batch_size * self.epochs),future = self.future,denormalize = self.denormalize)
             try:
                 if not reset and not trial:
+                    print("training from loaded ckpt")
                     self.trainer.fit(self.learn,ckpt_path=self.load_path)
                 else:
                     raise ValueError
-            except:
+            except Exception as e:
+                print(e)
                 if hasattr(self,"tensorboard_logger"):
                     self.tensorboard_logger.log_hyperparams({
                         "lr": learning_rate,
@@ -652,28 +718,43 @@ class ForecastModel:
         
             if trial:
                return self.trainer.callback_metrics["val_loss"].item()
-            
+            else:
+                try:
+                    test_score = self.trainer.test(self.learn, ckpt_path=f"{self.store_dir}/best.ckpt")
+                except Exception as e:
+                    print(e)
+                    test_score = self.trainer.test(self.learn, ckpt_path=f"{self.load_dir}/best.ckpt")
+                return test_score
+
     def denormalize(self,tensor,values="x"):
         # return tensor * self.std[values] + self.mean[values]
+        #because if we use realtime data we do not have the laser-activation data channel in the input x data so this is not normalized
         return tensor * self.std[values][...,:tensor.shape[-1]] + self.mean[values][...,:tensor.shape[-1]]
 
     def normalize(self,tensor,values="x"):
         # return (tensor - self.mean[values]) / self.std[values]
+        #because if we use realtime data we do not have the laser-activation data channel in the input x data so this is not normalized
         return (tensor - self.mean[values][...,:tensor.shape[-1]]) / self.std[values][...,:tensor.shape[-1]]
 
     def test(self,iterative_forecast=False,checkpoint="best"):
-        # self.trainer.test(self.learn, ckpt_path=f"{self.store_dir}/{checkpoint}.ckpt")
+        # try:
+        #     test_score = self.trainer.test(self.learn, ckpt_path=f"{self.store_dir}/{checkpoint}.ckpt")
+        # except Exception as e:
+        #     print(e)
+        #     test_score = self.trainer.test(self.learn, ckpt_path=f"{self.load_dir}/{checkpoint}.ckpt")
+        self.plot_test(version=checkpoint,iterative_forecast=iterative_forecast)
 
-        if self.n_epochs > 1: 
-            self.plot_test(version=checkpoint,iterative_forecast=iterative_forecast)
-        else:
-            self.plot_test(version="before",iterative_forecast=iterative_forecast)
-
+        # return test_score
+    
     def plot_test(self,version="before",iterative_forecast=False):
         predictions = self.trainer.predict(dataloaders = self._loaderfunc(subset="test_plot"),ckpt_path=f"{self.load_dir}/{version}.ckpt")
         y,y_hat,error = map(torch.cat, zip(*predictions))
+        if self.in_features >self.out_features:
+            laser_timestamps = self.test_laser_timestaps
+        else: 
+            laser_timestamps = []
+        vlines = laser_timestamps.nonzero()[0]
 
-        laser_points = torch.permute(self.test_plot_x[:-1],(1,0,2)).flatten(0,1)
         if self.n_forecasts> 1:
             fig, axes = plt.subplots(self.out_features, 1, figsize=(30,4*self.out_features),constrained_layout=True)
             axes = axes.ravel()
@@ -682,7 +763,8 @@ class ForecastModel:
                 ax.plot(y_hat[:,feat_nr], label="NCP output",linewidth=1)
                 ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
                 ax.legend(loc='upper right')
-
+                ax.vlines(vlines,0,max(y[:,feat_nr]))
+            
             plt.suptitle(f"{version} training")
             plt.savefig(f"results/{self.task}/{self.model_id}_{version}_all_predictions.jpg")
             plt.close()
@@ -694,21 +776,67 @@ class ForecastModel:
                 ax.plot(error[:,feat_nr], label="Prediction error",linewidth=1)
                 ax.set_title(f"{self.feature_labels[feat_nr]}",loc = 'left')
                 ax.legend(loc='upper right')
+                ax.vlines(vlines,0,max(y[:,feat_nr]))
 
             plt.suptitle(f"{version} training")
             plt.savefig(f"results/{self.task}/{self.model_id}_{version}_all_predictions-error.jpg")
             plt.close()
 
         pool = multiprocessing.Pool(processes=self.n_forecasts)
-        inputs = list([(future_point,y,y_hat,error,self.n_forecasts,version,self.out_features,self.feature_labels,self.task,self.model_id) for future_point in range(self.n_forecasts)])
+        inputs = list([(future_point,y,y_hat,error,self.n_forecasts,version,self.out_features,self.feature_labels,self.task,self.model_id,self.test_laser_timestaps) for future_point in range(self.n_forecasts)])
         pool.starmap(plot_future_point,inputs)
         return
 
-def plot_future_point(future_point,y,y_hat,error,n_forecasts,version,out_features,feature_labels,task,model_id):
+    def analyse(self):
+        predictions = self.trainer.predict(dataloaders = self._loaderfunc(subset="test_plot"),ckpt_path=f"{self.load_dir}/{version}.ckpt")
+        y,y_hat,error = map(torch.cat, zip(*predictions))
+
+
+        future_point_indices = torch.LongTensor(list(range(future_point,y.shape[0],n_forecasts)))
+        y_for_future = np.take(y, future_point_indices, 0)
+        y_hat_for_future = np.take(y_hat,future_point_indices, 0)
+        error_for_future = np.take(error, future_point_indices, 0)
+        laser_timestamps_for_future = np.take(laser_timestamps, future_point_indices[future_point_indices<laser_timestamps.shape[0]], 0)
+        vlines = laser_timestamps_for_future.nonzero()[0]
+
+
+        # plot the predictions for each feature in a subplot
+        fig, axes = plt.subplots(out_features, 1, figsize=(30,4*out_features),constrained_layout=True)
+        axes = axes.ravel()
+        for (feat_nr,ax) in zip(range(out_features),axes):
+            ax.plot(y_for_future[:,feat_nr],label="Target output",linewidth=1)
+            ax.plot(y_hat_for_future[:,feat_nr], label="NCP output",linewidth=1)
+            ax.set_title(f"{feature_labels[feat_nr]}",loc = 'left')
+            ax.legend(loc='upper right')
+            ax.vlines(vlines,0,max(y_for_future[:,feat_nr]))
+
+        plt.suptitle(f"{version} training")
+        plt.savefig(f"results/{task}/{model_id}_{version}_{future_point}.jpg")
+        plt.close()
+
+        # plot the error for each feature in a subplot
+        fig, axes = plt.subplots(out_features, 1, figsize=(30,4*out_features),constrained_layout=True)
+        axes = axes.ravel()
+        for (feat_nr,ax) in zip(range(out_features),axes):
+            error_magnitude = (error_for_future[:,feat_nr]**2).mean()
+            ax.plot(error_for_future[:,feat_nr], label="Prediction error",linewidth=1)
+            ax.set_title(f"{feature_labels[feat_nr]} MSE {error_magnitude:.4f}",loc = 'left')
+            ax.legend(loc='upper right')
+            ax.vlines(vlines,0,max(y_for_future[:,feat_nr]))
+
+        plt.suptitle(f"{version} training")
+        plt.savefig(f"results/{task}/{model_id}_{version}_{future_point}-error.jpg")
+        plt.close()
+        print(f"saved plots in results/{task}/{model_id}_{version}")
+
+def plot_future_point(future_point,y,y_hat,error,n_forecasts,version,out_features,feature_labels,task,model_id,laser_timestamps):
     future_point_indices = torch.LongTensor(list(range(future_point,y.shape[0],n_forecasts)))
     y_for_future = np.take(y, future_point_indices, 0)
     y_hat_for_future = np.take(y_hat,future_point_indices, 0)
     error_for_future = np.take(error, future_point_indices, 0)
+    laser_timestamps_for_future = np.take(laser_timestamps, future_point_indices[future_point_indices<laser_timestamps.shape[0]], 0)
+    vlines = laser_timestamps_for_future.nonzero()[0]
+
 
     # plot the predictions for each feature in a subplot
     fig, axes = plt.subplots(out_features, 1, figsize=(30,4*out_features),constrained_layout=True)
@@ -718,6 +846,7 @@ def plot_future_point(future_point,y,y_hat,error,n_forecasts,version,out_feature
         ax.plot(y_hat_for_future[:,feat_nr], label="NCP output",linewidth=1)
         ax.set_title(f"{feature_labels[feat_nr]}",loc = 'left')
         ax.legend(loc='upper right')
+        ax.vlines(vlines,0,max(y_for_future[:,feat_nr]))
 
     plt.suptitle(f"{version} training")
     plt.savefig(f"results/{task}/{model_id}_{version}_{future_point}.jpg")
@@ -731,6 +860,7 @@ def plot_future_point(future_point,y,y_hat,error,n_forecasts,version,out_feature
         ax.plot(error_for_future[:,feat_nr], label="Prediction error",linewidth=1)
         ax.set_title(f"{feature_labels[feat_nr]} MSE {error_magnitude:.4f}",loc = 'left')
         ax.legend(loc='upper right')
+        ax.vlines(vlines,0,max(y_for_future[:,feat_nr]))
 
     plt.suptitle(f"{version} training")
     plt.savefig(f"results/{task}/{model_id}_{version}_{future_point}-error.jpg")
@@ -792,21 +922,18 @@ class RealtimeForecastModel(ForecastModel):
         # while not self.stop_event.is_set():
         self.norm_recorded_history = self.norm_recorded_history.to(self.device,non_blocking=True)
         print("start predict")
+        pos_laser_norm_value = 1 - self.mean["x"][...,-1] / self.std["x"][...,-1]
+        neg_laser_norm_value = 0 - self.mean["x"][...,-1] / self.std["x"][...,-1]
+        laser_feature = torch.full((1,32,1))
         while True:
-            # with self.data_condition:
-            #     self.data_condition.wait()
             _start = dt.datetime.now()
             if  not self.pipe_connection.poll():
                 continue
             in_x, in_x_de = self.pipe_connection.recv()
-            # print(f"read {_}")
-            # in_x, in_x_de = self._loaderfunc(subset="predict")
-            # print("incoming: ",in_x.shape,flush=True)
             in_x = in_x.to(self.device,non_blocking=True) # shape of (seq_len,1,neurons) > (1,seq_len,neurons) 
-            # print("incoming: ",in_x.shape,flush=True)
-            # new_read_timesteps = in_x.shape[1] - self.total_read_timesteps
             new_read_timesteps = in_x.shape[1]
             self.total_read_timesteps += new_read_timesteps
+            """Please check the following. why is in_x_de indexed by new_read_timesteps? check get_dataloader("predict") in DataBaseClass """
             self.norm_recorded_history = torch.concat((self.norm_recorded_history,in_x), dim= 1) 
             self.recorded_history = torch.concat((self.recorded_history,torch.tensor(in_x_de[-new_read_timesteps:])), dim= 0) 
 
@@ -817,17 +944,14 @@ class RealtimeForecastModel(ForecastModel):
                 continue
 
             missed_predictions = max(0,new_read_timesteps - self.n_forecasts)
-            # in_x = in_x[:,-self.seq_len:,:] #fetch last 32 timestamps
             in_x = self.norm_recorded_history[:,-self.seq_len:,:]
             x_pos = x_neg = in_x # (1,seq_len,neurons)
             y_hat_pos = y_hat_neg  = torch.empty((1,self.n_iterative_forecasts,in_x.shape[-1]), device=self.device)
             for i in range(self.n_iterative_forecasts):
-                """we only add a 1 for laser activation at the 2 direct following bin, no  other bins"""
-                x_pos_in = torch.cat((x_pos,torch.full((1,32,1),1 if i < 2 else 0,device=self.device)),dim=-1)
+                """we only add a 1 for laser activation at the 2 bins with most lag, no other bins"""
+                x_pos_in = torch.cat((x_pos,torch.full((1,32,1),pos_laser_norm_value if i > 3 else neg_laser_norm_value,device=self.device)),dim=-1)
                 x_neg_in = torch.cat((x_neg,torch.full((1,32,1), 0,device=self.device)),dim=-1)
                 x = torch.cat((x_pos_in,x_neg_in),dim=0)
-                # print("before model call")
-                # print(f"pred {i}",flush=True)
                 pred, _ = self._model.forward(x) # (2, last timestep, neurons(excluding activation))
                 (next_step_pos,next_step_neg) = pred
                 y_hat_pos[:,i] = next_step_pos[-1:,:]
@@ -842,12 +966,8 @@ class RealtimeForecastModel(ForecastModel):
             print('Duration: {:.4f}'.format((dt.datetime.now() - _start).total_seconds() *1000),flush=True)
             y_hat_pos_de = self.denormalize(y_hat_pos.detach().cpu(),"y").flatten(0,1) # (5,17)
             y_hat_neg_de = self.denormalize(y_hat_neg.detach().cpu(),"y").flatten(0,1)
-        
-            # self.y_hat_pos_de = y_hat_pos_de
-            # self.y_hat_neg_de = y_hat_neg_de
             self.predict_pos_history = torch.concat((self.predict_pos_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_pos_de), dim= 0) 
             self.predict_neg_history = torch.concat((self.predict_neg_history,torch.full((missed_predictions,self.in_features-1),0),y_hat_neg_de), dim= 0) 
-            # print("records so far: ", self.recorded_history.shape, self.predict_pos_history.shape,self.predict_neg_history.shape,flush=True)
             plot_length = min(100, self.total_read_timesteps)
             self.plot_sender.send((plot_length,
                     self.predict_pos_history[-(plot_length+self.n_forecasts):],self.predict_neg_history[-(plot_length+self.n_forecasts):], 

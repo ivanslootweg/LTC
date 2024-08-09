@@ -1,0 +1,5 @@
+for dummy data:
+    every 500 ms we provide 500 ms of new recording data
+    for these 500 ms we predict 5 bins ahead. this takes about 350 ms
+    we predict 0.05 *5 = 0.250 ms ahead in 350 ms
+    

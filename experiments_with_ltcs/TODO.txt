@@ -17,6 +17,8 @@ Organisational
         better train test split                 done. 12 07
         where test data is not part of          done. (12 07)
         look into left hamming somoothing       done. 16 07. use gaussian smoothing
+        re-name the cv folders such that        queue(1)
+                naming is correct
 
 
 Model fitting
@@ -31,6 +33,7 @@ Model fitting
         cross validation for sequence length    running 31 07
         implement cross validation              done. 31.07
         cross validation for model params       queue(2). re-run after decision on sigma and sequence length. now running with (7,32)　on ponyland
+
 
 Model implementation
         predict more timestaps ahead            experimented with 2 timesteps  
@@ -67,12 +70,52 @@ Model implementation
         implement predict function in learner   done 30 07 
         read into jean's system                 done 30 07 
 
-        
+        plot laser ticks with the results           done 06/08
         fix plot function + run for 400 epochs  done 2307
                 + evaluate all models           
+        fix dataloader for realtime predictions.        done 08/08. obtain normalized value in predict() function
+                make sure that the laser activation     
+                is the same as the normalized values
+                        during training
+
+        
+
+finalise to do 
+        HYPERPARAMETERS
+                seq length : 0508
+                model size and lr : 0608
+                scheduled sampling : 0708
+                weighted batch sampling? : running (0708 implemented)
+
+        
+        ANALYSIS
+                Retrain with hyperparams on new dataset (queue 0, check if weighted batch sampling works good)
+                Compare prediction error for each lag point
+                Plot pos and neg laser for each timepoint 
+                Plot error+sd with pos-neg laser difference + sd to see if we can reliably predict difference
 
 
 
+obtain model parameters                         DONE: SELECT SIZE 36 LENGTH 48 LR 0.005 AND COMPARE SCHEDULED SAMPLING
+        so far: seq len (48) and size (32)
+        train 5-fold with seq len 48 and size and lr ?? ; (20,0.01; 22, 0.01; 24,0.01 )
+        conclude that we need a lower lr of about 5e-4 for slow convergence
+        go check speed diff between 40 and 32 size
+        
+train normal and finetune with scheduled sampling  SKIP     
+        find out how to load only model weights
+        call other learning module
+
+compare training with and without scheduled sampling (running)　
+        by using the same parameters
+        write script for 5-fold cv with these techniques (takes 20 hours for scheduled sampling) done 06/08. now running       
+                2 experiments per type: low and hig lr
+        perform 5-fold cross validation: plot mean auc (or whatever)
+over-sampling of laser timesteps?: implement weighted sampler with batch sampling ! 
+        overample any sequence that has laser activity in the last 5 bins
+present by evaluation metric: plot MAE over time ? together with pooled MAE
+train final model on all training data  
+        implement training without validation
 
 today todo (1707)
        RERUN AL INFERENCE ON BEST EPOCH

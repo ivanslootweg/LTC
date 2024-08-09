@@ -156,7 +156,6 @@ class PlotHandler(FileSystemEventHandler):
             traceback.print_exc()
     
 
-
 def run(model_id,model_type,mixed_memory,task,recording_id,parent_connection,iterative_forecast,child_connection,plot_sender,args):
     dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
     dataset_data.pipe_connection = child_connection
@@ -195,6 +194,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpus', nargs='+', type=int,default = None)    
     parser.add_argument('--seq_len',default=32,type=int)
     parser.add_argument('--future',default=1,type=int)
+    parser.add_argument('--plot',action="store_true")
 
     args = parser.parse_args()
     iterative_forecast = True
@@ -203,7 +203,10 @@ if __name__ == "__main__":
     mixed_memory = True
     task =  "neuronlaser_forecast"
     recording_id = str(int(dt.datetime.today().strftime("%Y%m%d%H%M")))
-        
+       
+    assert args.future > 0 , "Future should be > 0"
+    # some_data_class = get_database_class(RealtimeNeuronLaserData)
+    
     model_id = args.model_id
     recording_id = "dummy"
     print(f" --------- model id: {model_id} recording id : {recording_id}--------- ")
@@ -213,25 +216,26 @@ if __name__ == "__main__":
 
     parent_connection, child_connection = Pipe()
     dataset_data = RealtimeNeuronLaserData(future=args.future,seq_len=args.seq_len,iterative_forecast=iterative_forecast)
-    dataset_data.set_pipe(child_connection)
+    dataset_data.pipe_connection = child_connection
 
     plot_listener, plot_sender = Pipe()
 
-    # fig,axes = plt.subplots(int(dataset_data.out_features/2), 2, figsize=(30,10*dataset_data.out_features),constrained_layout=True)
-    # axes = axes.ravel()
+    if args.plot:
+        fig,axes = plt.subplots(int(dataset_data.out_features/2), 2, figsize=(30,10*dataset_data.out_features),constrained_layout=True)
+        axes = axes.ravel()
 
-    # lines = []
-    # for feat_nr, ax in enumerate(axes):
-    #     ax.set_ylim(-0.1,None) 
-    #     ax.set_xlim(0,64)
-    #     line_pos, = ax.plot([], [], lw=1, linestyle="-", alpha =0.5,label="With activation")
-    #     line_neg, = ax.plot([], [], lw=1, linestyle="--",alpha =0.5,  label="No activation")
-    #     line_rec, = ax.plot([], [], lw=1, linestyle="--", alpha =0.5,label="Recording")
-    #     lines.append((line_pos, line_neg, line_rec))
-    #     ax.legend(loc='upper right')
+        lines = []
+        for feat_nr, ax in enumerate(axes):
+            ax.set_ylim(-0.1,None) 
+            ax.set_xlim(0,64)
+            line_pos, = ax.plot([], [], lw=1, linestyle="-", alpha =0.5,label="With activation")
+            line_neg, = ax.plot([], [], lw=1, linestyle="--",alpha =0.5,  label="No activation")
+            line_rec, = ax.plot([], [], lw=1, linestyle="--", alpha =0.5,label="Recording")
+            lines.append((line_pos, line_neg, line_rec))
+            ax.legend(loc='upper right')
 
-    # plt.show(block=False)
-    # print("prepared plot")
+        plt.show(block=False)
+        print("prepared plot")
 
     processes = [] 
     data_observer = Observer()
@@ -253,9 +257,11 @@ if __name__ == "__main__":
 
     try:
         while True:
-        #     fig,ax, lines = main_update_plot(plot_listener,fig,axes,lines)
+            if args.plot:
+                fig,ax, lines = main_update_plot(plot_listener,fig,axes,lines)
         #     plt.pause(0.1)
-            pass
+            else:
+                continue
     except KeyboardInterrupt:
         plt.close('all')
         data_observer.stop()
@@ -268,4 +274,3 @@ if __name__ == "__main__":
     data_observer.join()
     for process in processes:
         process.terminate()
-

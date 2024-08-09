@@ -28,7 +28,7 @@ def create_spikes(spikes,bin_distance = None,include_from=None,include_until=Non
     bin_centers_neurons = np.arange(np.around(include_from,decimals = 4), np.around(include_until,decimals = 4),bin_distance)
     firing_rates = []
 
-    if bin_width is not None:
+    if bin_width is not None or (is_pulses):
         interval = bin_width / 2
     else:
         interval = bin_distance / 2 
@@ -38,10 +38,10 @@ def create_spikes(spikes,bin_distance = None,include_from=None,include_until=Non
     for i in range(spikes.shape[0]):
         firing_rates.append(calculate_firing_rate(spikes[i],bin_centers_neurons,interval).astype(np.float32))
     firing_rates = np.array(firing_rates)
-    if sigma and not is_pulses:
+    if sigma:
         firing_rates = gaussian_filter1d(firing_rates,sigma)
         smoothing_tag = f"_s{sigma}"
-    elif hamming and not is_pulses:
+    elif hamming:
         for i in range(firing_rates.shape[0]):
             firing_rates[i] = left_smoothing(firing_rates[i])
         smoothing_tag = f"_hamming"
@@ -77,7 +77,6 @@ def create_spikes(spikes,bin_distance = None,include_from=None,include_until=Non
         plt.savefig(f"data/neurons/{fname}_width{bin_width:.4f}_distance{bin_distance:.3f}_s{sigma}.jpg")
 
     return firing_rates
-
 
 def load_training_data(neuroncount=None,fname=None):
     N_NEURONS = {"ADL1_2023-10-24_22-40-25" : 17,
@@ -125,7 +124,6 @@ def load_training_data(neuroncount=None,fname=None):
         f.write(f"{min(laserpulses)} {max(laserpulses)} some inter-pulse times: {[laserpulses[i+1]-laserpulses[i] for i in range(0,20,5)]}\n")
     f.close()
 
-
 def create_realtime_spikes(spikes,bin_distance = None,include_from=None,include_until=None, bin_width =0, save = True,sigma=None,hamming = False, is_pulses=False):
     # remove last bin 
     bin_centers_neurons = np.arange(np.around(include_from,decimals = 4), np.around(include_until,decimals = 4),bin_distance)[:-1]
@@ -141,14 +139,13 @@ def create_realtime_spikes(spikes,bin_distance = None,include_from=None,include_
     for i in range(spikes.shape[0]):
         firing_rates.append(calculate_firing_rate(spikes[i],bin_centers_neurons,interval).astype(np.float32))
     firing_rates = np.array(firing_rates)
-    if sigma and not is_pulses:
+    if sigma:
         firing_rates = gaussian_filter1d(firing_rates,sigma)
-    elif hamming and not is_pulses:
+    elif hamming:
         for i in range(firing_rates.shape[0]):
             firing_rates[i] = left_smoothing(firing_rates[i])
 
     return firing_rates,bin_centers_neurons[-1]
-
 
 def create_realtime_bins(neuroncount=None,fname=None,include_from=0):
     N_NEURONS = {"ADL1_2023-10-24_22-40-25" : 17,
@@ -180,15 +177,9 @@ def create_realtime_bins(neuroncount=None,fname=None,include_from=0):
 
 
 if __name__ == "__main__":
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('--fname',default="ADL1_2023-07-31_00-09-22")
-    # parser.add_argument('--neuroncount',default=None,type=int)
-    # args = parser.parse_args()
-    # load_training_data(args.neuroncount,args.fname)
-    
-
     parser = argparse.ArgumentParser()
-    parser.add_argument('--fname',default="ADL1_2023-10-24_22-40-25")
+    # parser.add_argument('--fname',default="ADL1_2023-10-24_22-40-25")
+    parser.add_argument('--fname',default="ADL1_2023-07-31_00-09-22")
     parser.add_argument('--neuroncount',default=None,type=int)
     args = parser.parse_args()
     load_training_data(args.neuroncount,args.fname)
